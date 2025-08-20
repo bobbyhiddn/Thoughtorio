@@ -7,6 +7,7 @@
     export let completeConnection = null;
     export let isConnecting = false;
     export let isSelected = false;
+    export let blockNodeInteractions = false;
     
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -53,7 +54,15 @@
             return; // Don't handle when editing text
         }
         
+        // Don't handle if canvas is blocking node interactions
+        if (blockNodeInteractions || $canvasState.mode === 'box-selecting') {
+            event.stopPropagation();
+            return;
+        }
+        
+        // Prevent event from bubbling to canvas
         event.stopPropagation();
+        event.preventDefault();
         mouseDownTime = Date.now();
         mouseDownPos = { x: event.clientX, y: event.clientY };
         
@@ -83,6 +92,11 @@
     }
     
     function handleGlobalMouseMove(event) {
+        // Don't interfere with canvas box selection
+        if (blockNodeInteractions || $canvasState.mode === 'box-selecting') {
+            return;
+        }
+        
         // Check if we should start dragging
         const distance = Math.sqrt(
             Math.pow(event.clientX - mouseDownPos.x, 2) + 
@@ -113,6 +127,11 @@
     }
     
     function handleGlobalMouseUp() {
+        // Don't interfere with canvas box selection
+        if (blockNodeInteractions || $canvasState.mode === 'box-selecting') {
+            return;
+        }
+        
         isDragging = false;
         document.removeEventListener('mousemove', handleGlobalMouseMove);
         document.removeEventListener('mouseup', handleGlobalMouseUp);

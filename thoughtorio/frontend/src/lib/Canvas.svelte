@@ -18,6 +18,9 @@
     let hasMovedDuringDrag = false;
     let suppressNextDoubleClick = false;
     
+    // Global flag to immediately block node interactions
+    let blockNodeInteractions = false;
+    
     // Convert screen coordinates to canvas coordinates
     function screenToCanvas(screenX, screenY) {
         const rect = canvasElement.getBoundingClientRect();
@@ -66,20 +69,34 @@
             isDragging = true;
             lastPanPoint = { x: event.clientX, y: event.clientY };
             canvasState.update(s => ({ ...s, mode: 'pan' }));
+            
+            // Use global listeners for robust panning
+            window.addEventListener('mousemove', handleMouseMove);
+            window.addEventListener('mouseup', handleMouseUp);
         } else if (event.button === 0) {
             // Check if clicking on empty space (not a node or connection)
             const clickedOnNode = event.target.closest('.node-card');
             const clickedOnConnection = event.target.closest('.connection-group');
             const clickedOnPalette = event.target.closest('.node-palette');
             
+            console.log('Mouse down check - clickedOnNode:', !!clickedOnNode, 'clickedOnConnection:', !!clickedOnConnection, 'clickedOnPalette:', !!clickedOnPalette, 'target:', event.target.tagName, 'classes:', event.target.className);
+            
             if (!clickedOnNode && !clickedOnConnection && !clickedOnPalette) {
                 // Left mouse on empty canvas - start box selection
                 console.log('Starting box selection on empty space');
-                const canvasCoords = screenToCanvas(event.clientX, event.clientY);
-                boxSelectionStart = canvasCoords;
+                
+                // CRUCIAL: Prevent native browser drag behavior
+                event.preventDefault();
+                
+                // IMMEDIATELY set state to prevent node interference
                 isBoxSelecting = true;
                 hasMovedDuringDrag = false;
+                blockNodeInteractions = true;
                 
+                const canvasCoords = screenToCanvas(event.clientX, event.clientY);
+                boxSelectionStart = canvasCoords;
+                
+                // Set canvas state synchronously
                 canvasState.update(s => ({ 
                     ...s, 
                     mode: 'box-selecting',
@@ -90,6 +107,10 @@
                         height: 0
                     }
                 }));
+                
+                // Use global listeners for robust selection
+                window.addEventListener('mousemove', handleMouseMove);
+                window.addEventListener('mouseup', handleMouseUp);
             }
         }
     }
@@ -113,7 +134,8 @@
             tempConnection = { ...tempConnection }; // Trigger reactivity
         }
         
-        if (isBoxSelecting && $canvasState.mode === 'box-selecting') {
+        if (isBoxSelecting) {
+            console.log('Mouse move during box selection - isBoxSelecting:', isBoxSelecting, 'mode:', $canvasState.mode);
             const canvasCoords = screenToCanvas(event.clientX, event.clientY);
             const selection = {
                 x: Math.min(boxSelectionStart.x, canvasCoords.x),
@@ -123,19 +145,28 @@
             };
             
             // Mark as moved if we've dragged more than a few pixels
-            if (!hasMovedDuringDrag && (selection.width > 3 || selection.height > 3)) {
+            if (!hasMovedDuringDrag && (selection.width > 2 || selection.height > 2)) {
                 hasMovedDuringDrag = true;
-                console.log('Started actual drag movement');
+                console.log('Started actual drag movement at:', selection.width, 'x', selection.height);
             }
             
             console.log('Box selection size:', selection.width, 'x', selection.height, 'hasMoved:', hasMovedDuringDrag);
-            canvasState.update(s => ({ ...s, boxSelection: selection }));
+            canvasState.update(s => ({ 
+                ...s, 
+                boxSelection: selection,
+                mode: 'box-selecting'  // Ensure mode stays consistent
+            }));
         }
     }
     
     // Handle mouse up
     function handleMouseUp(event) {
-        console.log('Mouse up - isBoxSelecting:', isBoxSelecting, 'hasMovedDuringDrag:', hasMovedDuringDrag);
+        console.log('Mouse up - isBoxSelecting:', isBoxSelecting, 'hasMovedDuringDrag:', hasMovedDuringDrag, 'event.target:', event.target.tagName);
+        
+        // Remove global listeners
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+        
         isDragging = false;
         
         if (isConnecting) {
@@ -148,7 +179,8 @@
             // Finish box selection - find nodes within selection
             const selection = $canvasState.boxSelection;
             console.log('Finishing box selection:', selection, 'hasMoved:', hasMovedDuringDrag);
-            if (selection && hasMovedDuringDrag && (selection.width > 5 || selection.height > 5)) {
+            
+            if (selection && (selection.width > 5 || selection.height > 5)) {
                 const selectedNodeIds = $nodes.filter(node => {
                     const intersects = node.x < selection.x + selection.width &&
                            node.x + node.width > selection.x &&
@@ -164,13 +196,15 @@
                     selectedNode: selectedNodeIds.length === 1 ? selectedNodeIds[0] : null
                 }));
                 
-                // Suppress next double-click to prevent node creation after box selection
-                suppressNextDoubleClick = true;
-                setTimeout(() => {
-                    suppressNextDoubleClick = false;
-                }, 300);
+                // Only suppress double-click if we actually selected something or moved significantly
+                if (hasMovedDuringDrag && selectedNodeIds.length > 0) {
+                    suppressNextDoubleClick = true;
+                    setTimeout(() => {
+                        suppressNextDoubleClick = false;
+                    }, 300);
+                }
             } else {
-                // If box selection was too small or no movement, clear selection
+                // If box selection was too small, clear selection
                 canvasState.update(s => ({ 
                     ...s, 
                     selectedNodes: [],
@@ -181,21 +215,28 @@
             isBoxSelecting = false;
             lastBoxSelectionTime = Date.now();
             hasMovedDuringDrag = false;
+            blockNodeInteractions = false;
         }
         
+        // Always clear box selection and reset state
         canvasState.update(s => ({ 
             ...s, 
             mode: 'select',
             boxSelection: null
         }));
+        
+        // Ensure all selection state is properly reset
+        if (!isBoxSelecting) {
+            hasMovedDuringDrag = false;
+        }
     }
     
     // Handle double click to create text node
     function handleDoubleClick(event) {
-        console.log('Double click detected - suppressed:', suppressNextDoubleClick);
+        console.log('Double click detected - suppressed:', suppressNextDoubleClick, 'isBoxSelecting:', isBoxSelecting, 'lastBoxSelectionTime:', Date.now() - lastBoxSelectionTime);
         
-        if (suppressNextDoubleClick) {
-            console.log('Suppressing double-click due to recent box selection');
+        if (suppressNextDoubleClick || isBoxSelecting) {
+            console.log('Suppressing double-click due to box selection state');
             return;
         }
         
@@ -205,7 +246,7 @@
         const clickedOnPalette = event.target.closest('.node-palette');
         
         if (!clickedOnNode && !clickedOnConnection && !clickedOnPalette) {
-            console.log('Creating new node');
+            console.log('Creating new INPUT node via double-click');
             const canvasCoords = screenToCanvas(event.clientX, event.clientY);
             nodeActions.add('input', canvasCoords.x, canvasCoords.y, '');
         }
@@ -213,17 +254,32 @@
     
     // Handle drop from node palette
     function handleDrop(event) {
+        console.log('handleDrop called, dataTransfer:', event.dataTransfer.getData('text/plain'), 'isBoxSelecting:', isBoxSelecting);
+        
+        // Don't handle drops during box selection
+        if (isBoxSelecting) {
+            console.log('Ignoring drop during box selection');
+            return;
+        }
+        
         event.preventDefault();
         const nodeType = event.dataTransfer.getData('text/plain');
         const canvasCoords = screenToCanvas(event.clientX, event.clientY);
         
-        if (nodeType) {
+        // Only create node if we have a valid nodeType from actual drag operation
+        if (nodeType && nodeType.trim() !== '') {
+            console.log('Creating node from palette drop:', nodeType);
             nodeActions.add(nodeType, canvasCoords.x, canvasCoords.y);
+        } else {
+            console.log('No valid nodeType from drop, ignoring');
         }
     }
     
     function handleDragOver(event) {
-        event.preventDefault();
+        // Only prevent default for actual drag operations from palette, not box selection
+        if (!isBoxSelecting) {
+            event.preventDefault();
+        }
     }
     
     // Touch support for mobile/trackpad
@@ -412,7 +468,8 @@
                 ...s, 
                 selectedNode: null, 
                 selectedConnection: null,
-                selectedNodes: []
+                selectedNodes: [],
+                boxSelection: null  // Also clear any stuck box selection
             }));
         }
     }
@@ -488,12 +545,13 @@
                         {completeConnection} 
                         isConnecting={$canvasState.mode === 'connecting'}
                         isSelected={$canvasState.selectedNodes.includes(node.id) || $canvasState.selectedNode === node.id}
+                        {blockNodeInteractions}
                     />
                 {/each}
             </div>
             
             <!-- Box selection overlay -->
-            {#if $canvasState.boxSelection && $canvasState.mode === 'box-selecting'}
+            {#if $canvasState.boxSelection}
                 <div 
                     class="box-selection"
                     style="
