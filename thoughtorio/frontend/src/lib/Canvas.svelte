@@ -407,6 +407,14 @@
     
     // Handle global keyboard events
     function handleKeyDown(event) {
+        const target = event.target;
+        const isTextInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+        // If typing in an input, don't trigger global shortcuts for deletion
+        if (isTextInput && (event.key === 'Delete' || event.key === 'Backspace')) {
+            return;
+        }
+
         console.log('Key pressed:', event.key, 'Selected connection:', $canvasState.selectedConnection, 'Selected node:', $canvasState.selectedNode, 'Selected nodes:', $canvasState.selectedNodes);
         
         // Zoom shortcuts
@@ -528,7 +536,7 @@
                 
                 <!-- Render connections -->
                 {#each $connections as connection}
-                    <ConnectionLine {connection} {nodes} />
+                    <ConnectionLine {connection} />
                 {/each}
                 
                 <!-- Render temporary connection while dragging -->
@@ -557,7 +565,7 @@
             
             <!-- Nodes layer -->
             <div class="nodes-layer">
-                {#each $nodes as node}
+                {#each $nodes as node (node.id)}
                     <Node 
                         {node} 
                         {startConnection} 

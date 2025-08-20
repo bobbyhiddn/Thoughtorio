@@ -27,6 +27,7 @@ export const nodeActions = {
     },
     
     update: (id, updates) => {
+        console.log(`Updating node ${id} with:`, updates);
         nodes.update(n => n.map(node => 
             node.id === id ? { ...node, ...updates } : node
         ));
@@ -67,7 +68,7 @@ export const connectionActions = {
     
     getConnectionsFor: (nodeId) => {
         // This is a derived value, but putting it here for convenience
-        let currentConnections;
+        let currentConnections = [];
         connections.subscribe(c => currentConnections = c)();
         
         return {

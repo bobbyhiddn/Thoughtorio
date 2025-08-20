@@ -275,8 +275,8 @@ type AICompletionRequest struct {
 }
 
 type AICompletionResponse struct {
-	Content string `json:"content"`
-	Error   string `json:"error,omitempty"`
+	Content string
+	Error   string `json:",omitempty"`
 }
 
 // Main AI completion function - routes to appropriate provider
@@ -426,13 +426,13 @@ func (a *App) getGeminiCompletion(model, prompt, apiKey string) (AICompletionRes
 	reqBody := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
-				"parts": []map[string]interface{}{
+				"parts": []map[string]string{
 					{"text": prompt},
 				},
 			},
 		},
 		"generationConfig": map[string]interface{}{
-			"maxOutputTokens": 1000,
+			"maxOutputTokens": 2000,
 		},
 	}
 	
@@ -457,8 +457,22 @@ func (a *App) getGeminiCompletion(model, prompt, apiKey string) (AICompletionRes
 	}
 	defer resp.Body.Close()
 	
-	if resp.StatusCode != 200 {
+		if resp.StatusCode != 200 {
 		body, _ := ioutil.ReadAll(resp.Body)
+
+		var errorResponse struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+				Status  string `json:"status"`
+			} `json:"error"`
+		}
+
+		if err := json.Unmarshal(body, &errorResponse); err == nil && errorResponse.Error.Message != "" {
+			return AICompletionResponse{Error: errorResponse.Error.Message}, fmt.Errorf(errorResponse.Error.Message)
+		}
+
+		// Fallback for unexpected error format
 		errMsg := fmt.Sprintf("Gemini API error (%d): %s", resp.StatusCode, string(body))
 		return AICompletionResponse{Error: errMsg}, fmt.Errorf(errMsg)
 	}

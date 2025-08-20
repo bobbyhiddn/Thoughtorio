@@ -1,4 +1,5 @@
 <script>
+    import { onMount, afterUpdate } from 'svelte';
     import { canvasState } from '../stores/canvas.js';
     import { nodeActions } from '../stores/nodes.js';
     
@@ -15,6 +16,7 @@
     let contentElement;
     let mouseDownTime = 0;
     let mouseDownPos = { x: 0, y: 0 };
+    let nodeElement;
     
     // Get node type styling
     function getNodeStyle(type) {
@@ -188,23 +190,59 @@
             completeConnection(node.id, port);
         }
     }
+
+    function handleNodeActivation(event) {
+        if (event.target.tagName === 'TEXTAREA' || event.target.tagName === 'INPUT') {
+            return;
+        }
+
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            handleClick(event);
+        }
+    }
+
+    // Update node size in store
+    function updateNodeSize() {
+        if (!nodeElement) return;
+
+        const newWidth = nodeElement.offsetWidth;
+        const newHeight = nodeElement.offsetHeight;
+
+        if (newWidth > 0 && newHeight > 0 && (node.width !== newWidth || node.height !== newHeight)) {
+            nodeActions.update(node.id, { width: newWidth, height: newHeight });
+        }
+    }
+
+    onMount(() => {
+        // Set initial size
+        requestAnimationFrame(updateNodeSize);
+    });
+
+    afterUpdate(() => {
+        // Update size when content changes
+        requestAnimationFrame(updateNodeSize);
+    });
 </script>
 
 <svelte:window on:keydown={handleKeyDown} />
 
 <div 
+    bind:this={nodeElement}
     class="node-card"
     class:selected={isSelected}
     class:dragging={isDragging}
     style="
         left: {node.x}px; 
-        top: {node.y}px; 
-        width: {node.width}px;
+        top: {node.y}px;
         background: {nodeStyle.background};
         border-color: {nodeStyle.border};
     "
     on:mousedown={handleMouseDown}
     on:click={handleClick}
+    on:keydown={handleNodeActivation}
+    role="button"
+    tabindex="0"
 >
     <!-- Node header -->
     <div class="node-header">
@@ -281,6 +319,7 @@
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         cursor: move;
         min-height: 120px;
+        max-width: 600px;
         user-select: none;
         transition: box-shadow 0.2s ease;
     }

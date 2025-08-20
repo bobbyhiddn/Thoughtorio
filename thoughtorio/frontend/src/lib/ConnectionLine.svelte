@@ -1,9 +1,8 @@
 <script>
     import { canvasState } from '../stores/canvas.js';
-    import { connectionActions } from '../stores/nodes.js';
+    import { nodes, connectionActions } from '../stores/nodes.js';
     
     export let connection;
-    export let nodes;
     
     // Find the connected nodes
     $: fromNode = $nodes.find(n => n.id === connection.fromId);
@@ -24,7 +23,7 @@
         
         // Control points for smooth curve
         const dx = Math.abs(x2 - x1);
-        const controlOffset = Math.min(dx * 0.5, 100);
+        const controlOffset = dx * 0.5;
         
         const cx1 = x1 + controlOffset;
         const cy1 = y1;
@@ -51,6 +50,20 @@
         connectionActions.delete(connection.id);
         canvasState.update(s => ({ ...s, selectedConnection: null }));
     }
+
+    function handleConnectionKeyDown(event) {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            handleConnectionClick(event);
+        }
+    }
+
+    function handleDeleteKeyDown(event) {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            handleConnectionDelete();
+        }
+    }
 </script>
 
 {#if fromNode && toNode}
@@ -63,6 +76,10 @@
             fill="none"
             cursor="pointer"
             on:click={handleConnectionClick}
+            on:keydown={handleConnectionKeyDown}
+            tabindex="0"
+            role="button"
+            aria-label="Select connection"
         />
         
         <!-- Selection stroke (wider background) -->
@@ -93,28 +110,35 @@
                 x: (fromNode.x + fromNode.width + toNode.x) / 2, 
                 y: (fromNode.y + fromNode.height/2 + toNode.y + toNode.height/2) / 2 
             }}
-            <circle
-                cx={midPoint.x}
-                cy={midPoint.y}
-                r="12"
-                fill="#ff4444"
-                stroke="white"
-                stroke-width="2"
-                cursor="pointer"
+            <g 
+                class="delete-button-group"
+                tabindex="0"
+                role="button"
+                aria-label="Delete connection"
                 on:click|stopPropagation={handleConnectionDelete}
-                class="delete-button"
-            />
-            <text
-                x={midPoint.x}
-                y={midPoint.y + 4}
-                text-anchor="middle"
-                fill="white"
-                font-size="14"
-                font-weight="bold"
-                cursor="pointer"
-                on:click|stopPropagation={handleConnectionDelete}
-                class="delete-text"
-            >×</text>
+                on:keydown|stopPropagation={handleDeleteKeyDown}
+            >
+                <circle
+                    cx={midPoint.x}
+                    cy={midPoint.y}
+                    r="12"
+                    fill="#ff4444"
+                    stroke="white"
+                    stroke-width="2"
+                    cursor="pointer"
+                    class="delete-button"
+                />
+                <text
+                    x={midPoint.x}
+                    y={midPoint.y + 4}
+                    text-anchor="middle"
+                    fill="white"
+                    font-size="14"
+                    font-weight="bold"
+                    cursor="pointer"
+                    class="delete-text"
+                >×</text>
+            </g>
         {/if}
     </g>
 {/if}
