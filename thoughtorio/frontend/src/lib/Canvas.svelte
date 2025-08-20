@@ -395,7 +395,7 @@
         }
         
         // Create the connection
-        connectionActions.add(tempConnection.fromNodeId, toNodeId);
+        connectionActions.add(tempConnection.fromNodeId, toNodeId, tempConnection.fromPort, toPort);
         cancelConnection();
     }
     

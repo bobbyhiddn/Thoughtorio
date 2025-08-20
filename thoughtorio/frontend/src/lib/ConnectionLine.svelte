@@ -10,30 +10,63 @@
     $: isSelected = $canvasState.selectedConnection === connection.id;
     
     // Calculate bezier path
-    function getBezierPath(fromNode, toNode) {
-        if (!fromNode || !toNode) return '';
-        
-        // Start point (right edge of from node)
-        const x1 = fromNode.x + fromNode.width;
-        const y1 = fromNode.y + fromNode.height / 2;
-        
-        // End point (left edge of to node)
-        const x2 = toNode.x;
-        const y2 = toNode.y + toNode.height / 2;
-        
+    function getPortCoordinates(node, port) {
+        if (!node) return { x: 0, y: 0 };
+
+        switch (port) {
+            case 'input':
+                return { x: node.x, y: node.y + node.height / 2 };
+            case 'output':
+                return { x: node.x + node.width, y: node.y + node.height / 2 };
+            case 'top':
+            case 'ai_input':
+                return { x: node.x + node.width / 2, y: node.y };
+            case 'bottom':
+            case 'ai_output':
+                return { x: node.x + node.width / 2, y: node.y + node.height };
+            default:
+                // Default to old logic if ports are not defined
+                return { x: node.x + node.width, y: node.y + node.height / 2 };
+        }
+    }
+
+    function getBezierPath(fromNode, toNode, conn) {
+        if (!fromNode || !toNode || !conn) return '';
+
+        const start = getPortCoordinates(fromNode, conn.fromPort);
+        const end = getPortCoordinates(toNode, conn.toPort);
+
+        const { x: x1, y: y1 } = start;
+        const { x: x2, y: y2 } = end;
+
         // Control points for smooth curve
         const dx = Math.abs(x2 - x1);
-        const controlOffset = dx * 0.5;
-        
-        const cx1 = x1 + controlOffset;
-        const cy1 = y1;
-        const cx2 = x2 - controlOffset;
-        const cy2 = y2;
-        
+        const dy = Math.abs(y2 - y1);
+        const controlOffset = Math.max(dx * 0.5, dy * 0.3, 50);
+
+        let cx1, cy1, cx2, cy2;
+
+        // Adjust control points based on port locations
+        if (conn.fromPort === 'output' || conn.fromPort === 'input') {
+            cx1 = x1 + (conn.fromPort === 'output' ? controlOffset : -controlOffset);
+            cy1 = y1;
+        } else {
+            cx1 = x1;
+            cy1 = y1 + (conn.fromPort === 'bottom' || conn.fromPort === 'ai_output' ? controlOffset : -controlOffset);
+        }
+
+        if (conn.toPort === 'output' || conn.toPort === 'input') {
+            cx2 = x2 - (conn.toPort === 'input' ? controlOffset : -controlOffset);
+            cy2 = y2;
+        } else {
+            cx2 = x2;
+            cy2 = y2 - (conn.toPort === 'top' || conn.toPort === 'ai_input' ? controlOffset : -controlOffset);
+        }
+
         return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
     }
-    
-    $: pathData = getBezierPath(fromNode, toNode);
+
+    $: pathData = getBezierPath(fromNode, toNode, connection);
     
     function handleConnectionClick(event) {
         event.stopPropagation();

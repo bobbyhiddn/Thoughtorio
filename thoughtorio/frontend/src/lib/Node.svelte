@@ -179,7 +179,7 @@
     // Connection port handlers
     function handlePortMouseDown(event, port) {
         event.stopPropagation();
-        if (startConnection && port === 'output') {
+        if (startConnection) {
             startConnection(node.id, port);
         }
     }

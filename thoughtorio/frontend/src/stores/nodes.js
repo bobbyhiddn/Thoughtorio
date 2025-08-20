@@ -50,14 +50,16 @@ export const nodeActions = {
 
 // Helper functions for connection operations
 export const connectionActions = {
-    add: (fromId, toId) => {
+    add: (fromId, toId, fromPort, toPort) => {
         const connection = {
             id: crypto.randomUUID(),
             fromId,
             toId,
+            fromPort,
+            toPort,
             created: Date.now()
         };
-        
+
         connections.update(c => [...c, connection]);
         return connection;
     },
