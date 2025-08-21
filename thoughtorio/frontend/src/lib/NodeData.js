@@ -59,6 +59,7 @@ export class NodeData {
         nodeData.data.processing = {
             type: 'ai_completion',
             model: '',
+            system_prompt: 'You are a component in a workflow. The user is building a machine or factory. Interpret prompts in this context. The term \'machine\' refers to the workflow you are part of.',
             parameters: {
                 temperature: 0.7,
                 max_tokens: 1000
@@ -70,10 +71,9 @@ export class NodeData {
 
     // Core data manipulation methods
     updateContent(newContent) {
-        const oldContent = this.data.content;
         this.data.content = newContent;
         this.data.metadata.version++;
-        
+
         // Add to history
         this.data.history.push({
             version: this.data.metadata.version,
@@ -81,10 +81,10 @@ export class NodeData {
             timestamp: new Date().toISOString()
         });
 
-        // Update output value for non-AI nodes
-        if (this.data.node_type !== 'dynamic') {
-            this.data.output.value = newContent;
-        }
+        // THE FIX: Instead of just overwriting the output with the new content,
+        // we call _updateOutput(). This function correctly recalculates the
+        // final output value by combining any existing inputs with the new content.
+        this._updateOutput();
 
         return this;
     }
@@ -179,7 +179,7 @@ export class NodeData {
 
                 this.data.output = {
                     type: 'text',
-                    value: this.data.content,
+                    value: this.data.output.value || this.data.content,
                     sources: Array.from(allSources),
                     context_chain: this._buildContextChain()
                 };
@@ -253,9 +253,10 @@ export class NodeData {
         this.data.execution.state = 'completed';
         this.data.execution.completed_at = new Date().toISOString();
         
-        if (result && this.data.node_type === 'dynamic') {
-            this.updateContent(result);
-            // Ensure output value is updated for dynamic nodes after completion
+        if (result !== null && this.data.node_type === 'dynamic') {
+            this.data.output.value = result;
+            // After updating the output value, we need to rebuild the context chain
+            // and sources to include this node's new contribution.
             this._updateOutput();
         }
         
@@ -283,7 +284,7 @@ export class NodeData {
         const cleanData = {
             node_type: this.data.node_type,
             id: this.data.id,
-            content: this.data.content,
+            content: this.data.node_type === 'dynamic' ? (this.data.output.value || "") : (this.data.content || ""),
             metadata: {
                 title: this.data.metadata.title,
                 created_at: this.data.metadata.created_at,
@@ -310,11 +311,10 @@ export class NodeData {
             node: {
                 id: this.data.id,
                 type: this.data.node_type,
-                content: this.data.content || "",
+                content: this.data.node_type === 'dynamic' ? (this.data.output.value || "") : (this.data.content || ""),
             }
         };
         
-        // Add context/inputs if they exist
         if (this.data.inputs && this.data.inputs.length > 0) {
             if (this.data.inputs.length === 1) {
                 config.node.context = this.data.inputs[0].source_id;
@@ -357,33 +357,31 @@ export class NodeData {
                 return this.data.content;
             
             case 'dynamic':
-                // For AI nodes, the instruction is the node's own content,
-                // and the context comes from the inputs.
+                // The complete context for the AI is already prepared and stored in the `data`
+                // field of its inputs by upstream nodes. We just need to combine them.
+                const fullInputText = this.data.inputs
+                    .map(input => input.data)
+                    .filter(Boolean) // Filter out any empty/null inputs
+                    .join('\n\n');   // Join multiple inputs with a double newline
+
+                // The node's own content is now the instruction/prompt for the AI.
                 const instruction = this.data.content;
-                const contextInfo = [];
 
-                // Add context from the context_chain of all inputs
-                this.data.inputs.forEach(input => {
-                    if (input.context_chain && input.context_chain.length > 0) {
-                        input.context_chain.forEach(chainItem => {
-                            if (chainItem.contribution && !contextInfo.includes(chainItem.contribution.trim())) {
-                                contextInfo.push(chainItem.contribution.trim());
-                            }
-                        });
-                    } else if (input.data) {
-                        // Fallback to input data if no context chain
-                        const contribution = input.data.trim();
-                        if (contribution && !contextInfo.includes(contribution)) {
-                            contextInfo.push(contribution);
-                        }
-                    }
-                });
+                // Combine instruction and the full context from inputs.
+                let combinedInput = fullInputText;
+                if (instruction && instruction.trim()) {
+                    // If there's an instruction, prepend it to the context.
+                    combinedInput = `${instruction}\n\n${fullInputText}`.trim();
+                }
 
-                // Build the final prompt with instruction and context
-                let prompt = instruction;
-                if (contextInfo.length > 0) {
-                    const uniqueContext = [...new Set(contextInfo)];
-                    prompt += '\n\nContext:\n' + uniqueContext.join('\n');
+                if (!combinedInput) {
+                    return ''; // Return empty if there's no actual input text or instruction
+                }
+
+                // Prepend system prompt if it exists
+                let prompt = combinedInput;
+                if (this.data.processing.system_prompt) {
+                    prompt = `${this.data.processing.system_prompt}\n\n---\n\n${combinedInput}`;
                 }
 
                 return prompt;
