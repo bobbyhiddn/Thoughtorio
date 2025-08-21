@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <g fill="#fff" stroke="#1f2937" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+    <!-- Closed fist silhouette -->
+    <path d="M10 14c0-1.1.9-2 2-2h1c.8 0 1.5.5 1.8 1.2.3-.7 1-1.2 1.8-1.2h1c.8 0 1.5.5 1.8 1.2.3-.7 1-1.2 1.8-1.2h.2c1.1 0 2 .9 2 2v4.5c0 3-2.5 5.5-5.5 5.5H15c-2.8 0-5-2.2-5-5v-4z"/>
+    <!-- Knuckle hints -->
+    <path d="M13 15.5h2"/>
+    <path d="M17 15.5h2"/>
+    <path d="M21 15.5h1.5"/>
+  </g>
+</svg>
