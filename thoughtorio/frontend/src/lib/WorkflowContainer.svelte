@@ -1,50 +1,23 @@
 <script>
     import { executionState, workflowActions } from '../stores/workflows.js';
-    import { nodeActions, nodeDataStore } from '../stores/nodes.js';
-    import ContextMenu from './ContextMenu.svelte';
-    import { copyText, copyMachineConfig, pasteConfig } from './clipboard.js';
+    import { nodeActions, nodeDataStore, nodes } from '../stores/nodes.js';
+    import { copyText, copyMachineConfig, copyMachineMetadata, pasteConfig } from './clipboard.js';
     
     export let container;
     export let blockNodeInteractions = false;
+    export let startConnection = null;
+    export let completeConnection = null;
+    export let isConnecting = false;
     
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
     let mouseDownPos = { x: 0, y: 0 };
     
-    // Context menu state
-    let showContextMenu = false;
-    let contextMenuX = 0;
-    let contextMenuY = 0;
     
     $: isExecuting = $executionState.activeWorkflows.has(container.id);
-    $: showPlayButton = container.isWorkflow && container.nodes.length > 1;
+    $: showPlayButton = (container.isWorkflow && container.nodes && container.nodes.length > 1) || 
+                       (container.isFactory && container.machines && container.machines.length > 0);
     
-    // Context menu items for node machines
-    $: contextMenuItems = [
-        {
-            label: 'Copy All Text',
-            icon: '📄',
-            action: 'copy-text',
-            disabled: container.nodes.length === 0
-        },
-        {
-            label: 'Copy Machine Config',
-            icon: '⚙️',
-            action: 'copy-config'
-        },
-        {
-            label: 'Paste Machine Config',
-            icon: '📋',
-            action: 'paste-config'
-        },
-        { separator: true },
-        {
-            label: `${isExecuting ? 'Stop' : 'Run'} Machine`,
-            icon: isExecuting ? '⏹️' : '▶️',
-            action: isExecuting ? 'stop' : 'execute',
-            disabled: !showPlayButton
-        }
-    ];
     
     // Debug execution state changes
     $: {
@@ -103,10 +76,37 @@
         const deltaX = (event.clientX - mouseDownPos.x) / scale;
         const deltaY = (event.clientY - mouseDownPos.y) / scale;
         
-        // Move all nodes in the container
-        container.nodes.forEach(node => {
-            nodeActions.move(node.id, node.x + deltaX, node.y + deltaY);
-        });
+        // Move all content in the container
+        if (container.isFactory) {
+            // For factory containers, move all machines and individual nodes
+            container.machines.forEach(machine => {
+                // Move each machine's nodes
+                machine.nodes.forEach(node => {
+                    nodeActions.move(node.id, node.x + deltaX, node.y + deltaY);
+                });
+            });
+            
+            // Move individual nodes that are directly connected to machines
+            if (container.nodeIds) {
+                container.nodeIds.forEach(nodeId => {
+                    // Get current node position
+                    let currentNode = null;
+                    const unsubscribe = nodes.subscribe(nodeList => {
+                        currentNode = nodeList.find(n => n.id === nodeId);
+                    });
+                    unsubscribe();
+                    
+                    if (currentNode) {
+                        nodeActions.move(nodeId, currentNode.x + deltaX, currentNode.y + deltaY);
+                    }
+                });
+            }
+        } else if (container.nodes) {
+            // For regular workflow containers, move all nodes
+            container.nodes.forEach(node => {
+                nodeActions.move(node.id, node.x + deltaX, node.y + deltaY);
+            });
+        }
         
         // Update mouse position for next delta calculation
         mouseDownPos = { x: event.clientX, y: event.clientY };
@@ -140,72 +140,137 @@
         event.preventDefault();
         event.stopPropagation();
         
-        // Position context menu at mouse position
-        contextMenuX = event.clientX;
-        contextMenuY = event.clientY;
-        showContextMenu = true;
-    }
-    
-    async function handleContextMenuAction(event) {
-        const action = event.detail.action;
-        
-        try {
-            switch (action) {
-                case 'copy-text':
-                    // Collect all text content from nodes in the machine
-                    const allText = container.nodes
-                        .filter(node => node.content)
-                        .map(node => `${node.title}:\n${node.content}`)
-                        .join('\n\n---\n\n');
-                    
-                    if (allText) {
-                        const textResult = await copyText(allText);
-                        if (textResult.success) {
-                            console.log('Machine text copied to clipboard');
-                        } else {
-                            console.error('Failed to copy text:', textResult.error);
+        // Use global context menu system
+        if (window.showCanvasContextMenu) {
+            const menuItems = [
+                {
+                    label: 'Copy Text',
+                    icon: '📄',
+                    handler: async () => {
+                        let allText = '';
+                        if (container.isFactory) {
+                            // For factory containers, collect from machines and individual nodes
+                            const machineTexts = (container.machines || [])
+                                .flatMap(machine => machine.nodes || [])
+                                .filter(node => node.content)
+                                .map(node => `${node.title}:\n${node.content}`);
+                            allText = machineTexts.join('\n\n---\n\n');
+                        } else if (container.nodes) {
+                            allText = container.nodes
+                                .filter(node => node.content)
+                                .map(node => `${node.title}:\n${node.content}`)
+                                .join('\n\n---\n\n');
+                        }
+                        
+                        if (allText.trim()) {
+                            const textResult = await copyText(allText);
+                            if (!textResult.success) {
+                                console.error('Failed to copy text:', textResult.error);
+                            }
+                        }
+                    },
+                    disabled: (() => {
+                        if (container.isFactory) {
+                            return !(container.machines || []).some(machine => 
+                                (machine.nodes || []).some(node => node.content)
+                            );
+                        }
+                        return !container.nodes || !container.nodes.some(node => node.content);
+                    })()
+                },
+                {
+                    separator: true
+                },
+                {
+                    label: container.isFactory ? 'Copy Factory Config' : 'Copy Machine Config',
+                    icon: '⚙️',
+                    handler: async () => {
+                        const configResult = await copyMachineConfig(container, $nodeDataStore);
+                        if (!configResult.success) {
+                            console.error('Failed to copy machine config:', configResult.error);
                         }
                     }
-                    break;
-                    
-                case 'copy-config':
-                    const configResult = await copyMachineConfig(container, $nodeDataStore);
-                    if (configResult.success) {
-                        console.log('Machine config copied to clipboard');
-                    } else {
-                        console.error('Failed to copy machine config:', configResult.error);
+                },
+                {
+                    label: container.isFactory ? 'Copy Factory Metadata' : 'Copy Machine Metadata',
+                    icon: '🔧',
+                    handler: async () => {
+                        const metadataResult = await copyMachineMetadata(container, $nodeDataStore);
+                        if (!metadataResult.success) {
+                            console.error('Failed to copy machine metadata:', metadataResult.error);
+                        }
                     }
-                    break;
-                    
-                case 'paste-config':
-                    const pasteResult = await pasteConfig();
-                    if (pasteResult.success && pasteResult.type === 'machine_config') {
-                        const config = pasteResult.data;
-                        console.log('Pasting machine config:', config);
-                        // TODO: Implement machine config application
-                        console.log('Machine config paste not yet implemented');
-                    } else {
-                        console.error('Failed to paste machine config:', pasteResult.error);
+                },
+                {
+                    label: container.isFactory ? 'Paste Factory Config' : 'Paste Machine Config',
+                    icon: '📋',
+                    handler: async () => {
+                        const pasteResult = await pasteConfig();
+                        if (pasteResult.success) {
+                            console.log('Config pasted successfully (feature not implemented)');
+                        } else {
+                            console.error('Failed to paste config:', pasteResult.error);
+                        }
                     }
-                    break;
-                    
-                case 'execute':
-                    executeWorkflow();
-                    break;
-                    
-                case 'stop':
-                    stopWorkflow();
-                    break;
-            }
-        } catch (error) {
-            console.error('Context menu action failed:', error);
+                },
+                {
+                    separator: true
+                },
+                {
+                    label: 'Delete',
+                    icon: '🗑️',
+                    handler: async () => {
+                        if (container.isFactory) {
+                            // Delete all machines and nodes in the factory
+                            if (container.machines) {
+                                container.machines.forEach(machine => {
+                                    if (machine.nodes) {
+                                        machine.nodes.forEach(node => {
+                                            nodeActions.delete(node.id);
+                                        });
+                                    }
+                                });
+                            }
+                            if (container.nodeIds) {
+                                container.nodeIds.forEach(nodeId => {
+                                    nodeActions.delete(nodeId);
+                                });
+                            }
+                        } else {
+                            // Delete individual machine
+                            if (container.nodes) {
+                                container.nodes.forEach(node => {
+                                    nodeActions.delete(node.id);
+                                });
+                            }
+                        }
+                    }
+                }
+            ];
+            
+            window.showCanvasContextMenu(event.clientX, event.clientY, menuItems);
         }
+    }
+    
+    
+    // Machine port handlers - only for output
+    function handlePortMouseDown(event, port) {
+        event.stopPropagation();
+        if (port === 'output' && startConnection) {
+            startConnection(container.id, port);
+        }
+    }
+    
+    function handlePortMouseUp(event, port) {
+        event.stopPropagation();
+        // Machines only have outputs, they don't accept connections
     }
 </script>
 
-{#if container.isWorkflow}
+{#if container.isWorkflow || container.isFactory}
     <div 
         class="workflow-container"
+        class:factory-container={container.isFactory}
         class:executing={isExecuting}
         class:dragging={isDragging}
         style="
@@ -218,7 +283,26 @@
         on:contextmenu={handleRightClick}
     >
         <!-- Container border -->
-        <div class="container-border"></div>
+        {#if container.isFactory}
+            <!-- Factory border with draggable frame -->
+            <div class="factory-border">
+                <!-- Top border (draggable) -->
+                <div class="factory-border-edge top" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+                <!-- Right border (draggable) -->
+                <div class="factory-border-edge right" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+                <!-- Bottom border (draggable) -->
+                <div class="factory-border-edge bottom" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+                <!-- Left border (draggable) -->
+                <div class="factory-border-edge left" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+                <!-- Corner areas for better dragging -->
+                <div class="factory-corner top-left" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+                <div class="factory-corner top-right" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+                <div class="factory-corner bottom-left" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+                <div class="factory-corner bottom-right" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
+            </div>
+        {:else}
+            <div class="container-border"></div>
+        {/if}
         
         <!-- Play/Stop button -->
         {#if showPlayButton}
@@ -252,19 +336,25 @@
         
         <!-- Container label -->
         <div class="container-label">
-            Workflow ({container.nodes.length} nodes)
+            {#if container.isFactory}
+                Node Factory ({container.machines?.length || 0} machines, {container.nodeIds?.length || 0} nodes)
+            {:else}
+                Node Machine ({container.nodes?.length || 0} nodes)
+            {/if}
         </div>
+        
+        <!-- Machine Output port only (not for factory containers) -->
+        {#if !container.isFactory}
+            <div 
+                class="machine-port output-port" 
+                title="Machine Output"
+                on:mousedown={(e) => handlePortMouseDown(e, 'output')}
+                on:mouseup={(e) => handlePortMouseUp(e, 'output')}
+            ></div>
+        {/if}
     </div>
 {/if}
 
-<!-- Context Menu -->
-<ContextMenu 
-    bind:visible={showContextMenu}
-    x={contextMenuX}
-    y={contextMenuY}
-    items={contextMenuItems}
-    on:item-click={handleContextMenuAction}
-/>
 
 <style>
     .workflow-container {
@@ -293,6 +383,12 @@
         background: rgba(79, 70, 229, 0.05);
         pointer-events: all;
         transition: all 0.2s ease;
+    }
+    
+    /* Factory containers allow interaction with contents */
+    .factory-container .container-border {
+        pointer-events: none;
+        background: rgba(245, 158, 11, 0.03); /* More transparent for factories */
     }
     
     .workflow-container.executing .container-border {
@@ -402,5 +498,177 @@
     .workflow-container.executing .container-label {
         color: #059669;
         border-color: rgba(16, 185, 129, 0.3);
+    }
+    
+    /* Machine ports for connecting machines together */
+    .machine-port {
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+        border: 3px solid #4f46e5;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
+        pointer-events: all;
+        transition: all 0.2s ease;
+        z-index: 10;
+    }
+    
+    .machine-port.output-port {
+        right: -8px;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+    
+    .machine-port:hover {
+        background: #4f46e5;
+        border-color: #6366f1;
+        transform: translateY(-50%) scale(1.2);
+        box-shadow: 0 0 8px rgba(79, 70, 229, 0.5);
+    }
+    
+    .workflow-container.executing .machine-port {
+        border-color: #10b981;
+        animation: pulse-port 2s ease-in-out infinite;
+    }
+    
+    @keyframes pulse-port {
+        0%, 100% {
+            box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.7);
+        }
+        50% {
+            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0);
+        }
+    }
+    
+    /* Factory container specific styles */
+    .factory-container .container-border {
+        border: 3px solid #f59e0b;
+        border-radius: 16px;
+        background: rgba(245, 158, 11, 0.08);
+        border-style: solid; /* Solid border for factories vs dashed for machines */
+    }
+    
+    .factory-container:hover .container-border {
+        border-color: #f59e0b;
+        background: rgba(245, 158, 11, 0.12);
+        box-shadow: 0 0 15px rgba(245, 158, 11, 0.2);
+    }
+    
+    .factory-container.executing .container-border {
+        border-color: #10b981;
+        background: rgba(16, 185, 129, 0.1);
+        box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+    }
+    
+    .factory-container .container-label {
+        background: rgba(251, 191, 36, 0.9);
+        color: #92400e;
+        border-color: rgba(245, 158, 11, 0.3);
+    }
+    
+    /* Factory border system */
+    .factory-border {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        pointer-events: none;
+    }
+    
+    .factory-border-edge {
+        position: absolute;
+        pointer-events: all;
+        background: rgba(245, 158, 11, 0.1);
+        border: 2px solid #f59e0b;
+        cursor: url('../assets/cursor-grab.svg') 16 16, grab;
+    }
+    
+    .factory-border-edge.top {
+        top: -2px;
+        left: 20px;
+        right: 20px;
+        height: 8px;
+        border-radius: 4px 4px 0 0;
+    }
+    
+    .factory-border-edge.bottom {
+        bottom: -2px;
+        left: 20px;
+        right: 20px;
+        height: 8px;
+        border-radius: 0 0 4px 4px;
+    }
+    
+    .factory-border-edge.left {
+        left: -2px;
+        top: 20px;
+        bottom: 20px;
+        width: 8px;
+        border-radius: 4px 0 0 4px;
+    }
+    
+    .factory-border-edge.right {
+        right: -2px;
+        top: 20px;
+        bottom: 20px;
+        width: 8px;
+        border-radius: 0 4px 4px 0;
+    }
+    
+    .factory-corner {
+        position: absolute;
+        width: 20px;
+        height: 20px;
+        pointer-events: all;
+        background: rgba(245, 158, 11, 0.2);
+        border: 2px solid #f59e0b;
+        cursor: url('../assets/cursor-grab.svg') 16 16, grab;
+    }
+    
+    .factory-corner.top-left {
+        top: -2px;
+        left: -2px;
+        border-radius: 8px 0 0 0;
+    }
+    
+    .factory-corner.top-right {
+        top: -2px;
+        right: -2px;
+        border-radius: 0 8px 0 0;
+    }
+    
+    .factory-corner.bottom-left {
+        bottom: -2px;
+        left: -2px;
+        border-radius: 0 0 0 8px;
+    }
+    
+    .factory-corner.bottom-right {
+        bottom: -2px;
+        right: -2px;
+        border-radius: 0 0 8px 0;
+    }
+    
+    .factory-border-edge:hover,
+    .factory-corner:hover {
+        background: rgba(245, 158, 11, 0.3);
+        border-color: #d97706;
+    }
+    
+    /* Ensure play buttons inside factories are clickable */
+    .factory-container .play-button-container {
+        z-index: 1000; /* Above factory borders */
+        pointer-events: all;
+    }
+    
+    /* Ensure factory containers don't block contained workflow containers */
+    .factory-container {
+        z-index: -1; /* Below contained machines */
+    }
+    
+    .factory-container.dragging {
+        z-index: 10; /* Above everything when dragging factory */
     }
 </style>

@@ -1,32 +1,48 @@
 <script>
     import { canvasState } from '../stores/canvas.js';
     import { nodes, connectionActions } from '../stores/nodes.js';
+    import { workflowContainers } from '../stores/workflows.js';
     
     export let connection;
     
-    // Find the connected nodes
-    $: fromNode = $nodes.find(n => n.id === connection.fromId);
-    $: toNode = $nodes.find(n => n.id === connection.toId);
+    // Find the connected entities (nodes or machines)
+    $: fromEntity = connection.fromId.startsWith('workflow-') 
+        ? $workflowContainers.find(c => c.id === connection.fromId)
+        : $nodes.find(n => n.id === connection.fromId);
+    $: toEntity = connection.toId.startsWith('workflow-') 
+        ? $workflowContainers.find(c => c.id === connection.toId)
+        : $nodes.find(n => n.id === connection.toId);
+    
+    // Legacy aliases for backward compatibility
+    $: fromNode = fromEntity;
+    $: toNode = toEntity;
     $: isSelected = $canvasState.selectedConnection === connection.id;
     
     // Calculate bezier path
-    function getPortCoordinates(node, port) {
-        if (!node) return { x: 0, y: 0 };
+    function getPortCoordinates(entity, port) {
+        if (!entity) return { x: 0, y: 0 };
+
+        // Handle machine containers (which have bounds)
+        const bounds = entity.bounds || entity;
+        const x = bounds.x || entity.x || 0;
+        const y = bounds.y || entity.y || 0;
+        const width = bounds.width || entity.width || 0;
+        const height = bounds.height || entity.height || 0;
 
         switch (port) {
             case 'input':
-                return { x: node.x, y: node.y + node.height / 2 };
+                return { x: x, y: y + height / 2 };
             case 'output':
-                return { x: node.x + node.width, y: node.y + node.height / 2 };
+                return { x: x + width, y: y + height / 2 };
             case 'top':
             case 'ai_input':
-                return { x: node.x + node.width / 2, y: node.y };
+                return { x: x + width / 2, y: y };
             case 'bottom':
             case 'ai_output':
-                return { x: node.x + node.width / 2, y: node.y + node.height };
+                return { x: x + width / 2, y: y + height };
             default:
-                // Default to old logic if ports are not defined
-                return { x: node.x + node.width, y: node.y + node.height / 2 };
+                // Default to output port
+                return { x: x + width, y: y + height / 2 };
         }
     }
 

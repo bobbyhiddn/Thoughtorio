@@ -110,9 +110,10 @@ export const nodeActions = {
     // Get YAML backend data for a node
     getNodeData: (id) => {
         let nodeData = null;
-        nodeDataStore.subscribe(store => {
+        const unsubscribe = nodeDataStore.subscribe(store => {
             nodeData = store.get(id);
-        })();
+        });
+        unsubscribe();
         return nodeData;
     },
 
@@ -123,20 +124,27 @@ export const nodeActions = {
     },
 
     // Add input to a node (for data flow)
-    addInput: (nodeId, sourceId, data) => {
+    addInput: (nodeId, sourceId, data, weight = 1.0, contextChain = null, sources = null) => {
         nodeDataStore.update(store => {
             const newStore = new Map(store);
             const nodeData = newStore.get(nodeId);
             if (nodeData) {
                 try {
-                    nodeData.addInput(sourceId, data);
+                    nodeData.addInput(sourceId, data, weight, contextChain, sources);
                     newStore.set(nodeId, nodeData);
                     
-                    // Update visual node content if it's not a dynamic node
-                    if (nodeData.data.node_type !== 'dynamic') {
+                    // Input nodes should not change their visible content, only static nodes should
+                    if (nodeData.data.node_type === 'static') {
                         nodes.update(n => n.map(node => 
                             node.id === nodeId ? { ...node, content: nodeData.data.output.value } : node
                         ));
+                    }
+                    
+                    // Input and static nodes should propagate their updated output
+                    if (nodeData.data.node_type !== 'dynamic') {
+                        setTimeout(() => {
+                            connectionActions.propagateDataChange(nodeId);
+                        }, 0);
                     }
                 } catch (error) {
                     console.error(`Error adding input to node ${nodeId}:`, error.message);
@@ -192,6 +200,11 @@ export const nodeActions = {
                     nodes.update(n => n.map(node => 
                         node.id === id ? { ...node, content: result } : node
                     ));
+                    
+                    // Propagate the new AI output to connected nodes
+                    setTimeout(() => {
+                        connectionActions.propagateDataChange(id);
+                    }, 0);
                 }
             }
             return newStore;
@@ -251,6 +264,8 @@ export const nodeActions = {
 // Helper functions for connection operations
 export const connectionActions = {
     add: (fromId, toId, fromPort, toPort) => {
+        console.log(`Creating connection: ${fromId} -> ${toId}`);
+        
         // Validate connection based on node types
         const fromNodeData = nodeActions.getNodeData(fromId);
         const toNodeData = nodeActions.getNodeData(toId);
@@ -268,12 +283,36 @@ export const connectionActions = {
             created: Date.now()
         };
 
+        console.log('Adding connection to store:', connection);
         connections.update(c => [...c, connection]);
         
         // Update YAML data flow
         if (fromNodeData && toNodeData) {
             const outputData = fromNodeData.data.output.value;
-            nodeActions.addInput(toId, fromId, outputData);
+            const contextChain = fromNodeData.data.output.context_chain || null;
+            const sources = fromNodeData.data.output.sources || null;
+            nodeActions.addInput(toId, fromId, outputData, 1.0, contextChain, sources);
+        } else {
+            // Handle machine connections
+            const fromMachine = fromId.startsWith('workflow-');
+            const toMachine = toId.startsWith('workflow-');
+            
+            if (fromMachine && toNodeData) {
+                // Machine-to-node connection - defer machine output calculation to avoid circular dependency
+                setTimeout(() => {
+                    import('../stores/workflows.js').then(({ getMachineOutput }) => {
+                        const machineOutput = getMachineOutput(fromId);
+                        if (machineOutput) {
+                            // Machine outputs don't have context chains yet, but pass correct parameters
+                            nodeActions.addInput(toId, fromId, machineOutput, 1.0, null, null);
+                        }
+                    });
+                }, 0);
+            } else if (fromMachine && toMachine) {
+                // Machine-to-machine connection - data transfer will happen during factory execution
+                console.log(`Created machine-to-machine connection: ${fromId} -> ${toId}`);
+                // No immediate data transfer - will be handled by transferMachineOutputs during factory execution
+            }
         }
         
         return connection;
@@ -282,9 +321,10 @@ export const connectionActions = {
     delete: (id) => {
         // Get connection details before deleting
         let connectionToDelete = null;
-        connections.subscribe(c => {
+        const unsubscribe = connections.subscribe(c => {
             connectionToDelete = c.find(conn => conn.id === id);
-        })();
+        });
+        unsubscribe();
         
         if (connectionToDelete) {
             // Remove from YAML data flow
@@ -297,7 +337,8 @@ export const connectionActions = {
     getConnectionsFor: (nodeId) => {
         // This is a derived value, but putting it here for convenience
         let currentConnections = [];
-        connections.subscribe(c => currentConnections = c)();
+        const unsubscribe = connections.subscribe(c => currentConnections = c);
+        unsubscribe();
         
         return {
             incoming: currentConnections.filter(c => c.toId === nodeId),
@@ -312,10 +353,12 @@ export const connectionActions = {
 
         const connections_data = connectionActions.getConnectionsFor(sourceNodeId);
         const outputData = sourceNodeData.data.output.value;
+        const contextChain = sourceNodeData.data.output.context_chain || null;
+        const sources = sourceNodeData.data.output.sources || null;
 
         // Update all connected nodes with new data
         connections_data.outgoing.forEach(conn => {
-            nodeActions.addInput(conn.toId, sourceNodeId, outputData);
+            nodeActions.addInput(conn.toId, sourceNodeId, outputData, 1.0, contextChain, sources);
         });
     }
 };

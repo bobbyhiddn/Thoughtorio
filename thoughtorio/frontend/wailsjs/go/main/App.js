@@ -22,6 +22,10 @@ export function GetAICompletion(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetAICompletion'](arg1, arg2, arg3, arg4);
 }
 
+export function GetClipboard() {
+  return window['go']['main']['App']['GetClipboard']();
+}
+
 export function GetRecentCanvases() {
   return window['go']['main']['App']['GetRecentCanvases']();
 }
@@ -40,4 +44,8 @@ export function LoadCanvasFromPath(arg1) {
 
 export function SaveCanvas(arg1) {
   return window['go']['main']['App']['SaveCanvas'](arg1);
+}
+
+export function SetClipboard(arg1) {
+  return window['go']['main']['App']['SetClipboard'](arg1);
 }

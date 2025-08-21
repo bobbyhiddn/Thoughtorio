@@ -7,6 +7,8 @@
     import NodePalette from './NodePalette.svelte';
     import WorkflowContainer from './WorkflowContainer.svelte';
     import SettingsPanel from './SettingsPanel.svelte';
+    import ConfigPanel from './ConfigPanel.svelte';
+    import CanvasContextMenu from './CanvasContextMenu.svelte';
     
     let canvasElement;
     let isDragging = false;
@@ -27,6 +29,15 @@
     // Settings panel state
     let showSettings = false;
     
+    // Config panel state
+    let showConfigPanel = false;
+    
+    // Global context menu state
+    let showCanvasContextMenu = false;
+    let canvasContextMenuX = 0;
+    let canvasContextMenuY = 0;
+    let canvasContextMenuItems = [];
+    
     // File management state
     let showRecents = false;
     let recentCanvases = [];
@@ -39,6 +50,27 @@
         const x = (screenX - rect.left - $viewport.x) / $viewport.zoom;
         const y = (screenY - rect.top - $viewport.y) / $viewport.zoom;
         return { x, y };
+    }
+    
+    // Global context menu function
+    function showGlobalContextMenu(x, y, items) {
+        canvasContextMenuX = x;
+        canvasContextMenuY = y;
+        canvasContextMenuItems = items;
+        showCanvasContextMenu = true;
+    }
+    
+    // Make context menu function available globally
+    if (typeof window !== 'undefined') {
+        window.showCanvasContextMenu = showGlobalContextMenu;
+    }
+    
+    // Handle global context menu actions
+    async function handleGlobalContextMenuAction(event) {
+        const action = event.detail;
+        if (action.handler && typeof action.handler === 'function') {
+            await action.handler();
+        }
     }
     
     // Handle mouse wheel for zooming and trackpad pan
@@ -372,12 +404,24 @@
     
     // Connection handling functions
     function startConnection(fromNodeId, fromPort) {
+        // Check if it's a node or a machine
         const fromNode = $nodes.find(n => n.id === fromNodeId);
-        if (!fromNode) return;
+        const fromMachine = $workflowContainers.find(c => c.id === fromNodeId);
+        
+        if (!fromNode && !fromMachine) return;
         
         isConnecting = true;
-        const portX = fromPort === 'output' ? fromNode.x + fromNode.width : fromNode.x;
-        const portY = fromNode.y + fromNode.height / 2;
+        let portX, portY;
+        
+        if (fromNode) {
+            // Regular node connection
+            portX = fromPort === 'output' ? fromNode.x + fromNode.width : fromNode.x;
+            portY = fromNode.y + fromNode.height / 2;
+        } else if (fromMachine) {
+            // Machine connection - only from output port
+            portX = fromMachine.bounds.x + fromMachine.bounds.width;
+            portY = fromMachine.bounds.y + fromMachine.bounds.height / 2;
+        }
         
         tempConnection = {
             fromNodeId,
@@ -385,7 +429,8 @@
             startX: portX,
             startY: portY,
             endX: portX,
-            endY: portY
+            endY: portY,
+            isFromMachine: !!fromMachine
         };
         
         canvasState.update(s => ({ ...s, mode: 'connecting' }));
@@ -394,14 +439,36 @@
     function completeConnection(toNodeId, toPort) {
         if (!isConnecting || !tempConnection) return;
         
-        // Don't connect to same node
+        // Don't connect to same node/machine
         if (tempConnection.fromNodeId === toNodeId) {
             cancelConnection();
             return;
         }
         
+        // Only allow machine-to-node connections (not machine-to-machine)
+        const toNode = $nodes.find(n => n.id === toNodeId);
+        const toMachine = $workflowContainers.find(c => c.id === toNodeId);
+        
+        if (tempConnection.isFromMachine && toMachine) {
+            console.log('Machine-to-machine connections not allowed');
+            cancelConnection();
+            return;
+        }
+        
+        if (tempConnection.isFromMachine && toNode && toPort !== 'input') {
+            console.log('Machine can only connect to node input ports');
+            cancelConnection();
+            return;
+        }
+        
         // Create the connection
-        connectionActions.add(tempConnection.fromNodeId, toNodeId, tempConnection.fromPort, toPort);
+        try {
+            connectionActions.add(tempConnection.fromNodeId, toNodeId, tempConnection.fromPort, toPort);
+            console.log('Connection created:', tempConnection.fromNodeId, '->', toNodeId);
+        } catch (error) {
+            console.error('Failed to create connection:', error.message);
+        }
+        
         cancelConnection();
     }
     
@@ -836,6 +903,9 @@
                     <WorkflowContainer 
                         {container}
                         {blockNodeInteractions}
+                        {startConnection}
+                        {completeConnection}
+                        {isConnecting}
                     />
                 {/each}
             </div>
@@ -950,6 +1020,18 @@
                         {/if}
                     </button>
 
+                    <!-- Config Panel Button -->
+                    <button 
+                        class="toolbar-button config-button" 
+                        class:active={showConfigPanel}
+                        on:click={() => showConfigPanel = !showConfigPanel}
+                        title="View Configuration"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/>
+                        </svg>
+                    </button>
+
                     <!-- Settings Button -->
                     <button 
                         class="toolbar-button settings-button" 
@@ -967,6 +1049,18 @@
     
     <!-- Settings Panel -->
     <SettingsPanel bind:isOpen={showSettings} />
+    
+    <!-- Config Panel -->
+    <ConfigPanel bind:visible={showConfigPanel} />
+    
+    <!-- Global Context Menu -->
+    <CanvasContextMenu 
+        bind:visible={showCanvasContextMenu}
+        x={canvasContextMenuX}
+        y={canvasContextMenuY}
+        items={canvasContextMenuItems}
+        on:item-click={handleGlobalContextMenuAction}
+    />
 </div>
 
 <style>
@@ -1087,6 +1181,12 @@
         color: #4f46e5;
         transform: translateY(-1px);
         box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+    }
+    
+    .toolbar-button.active {
+        background: #4f46e5;
+        color: white;
+        box-shadow: 0 4px 8px rgba(79, 70, 229, 0.3);
     }
     
     .recents-button {

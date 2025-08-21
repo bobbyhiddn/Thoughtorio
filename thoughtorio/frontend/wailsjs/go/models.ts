@@ -30,6 +30,22 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class ClipboardResult {
+	    success: boolean;
+	    data?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClipboardResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.data = source["data"];
+	        this.error = source["error"];
+	    }
+	}
 	export class Model {
 	    id: string;
 	    name: string;

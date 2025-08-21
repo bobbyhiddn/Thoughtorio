@@ -3,8 +3,7 @@
     import { canvasState } from '../stores/canvas.js';
     import { nodeActions } from '../stores/nodes.js';
     import { executionState } from '../stores/workflows.js';
-    import ContextMenu from './ContextMenu.svelte';
-    import { copyText, copyNodeConfig, pasteConfig } from './clipboard.js';
+    import { copyText, copyNodeConfig, copyNodeMetadata, pasteConfig } from './clipboard.js';
     
     export let node;
     export let startConnection = null;
@@ -20,11 +19,6 @@
     let mouseDownTime = 0;
     let mouseDownPos = { x: 0, y: 0 };
     let nodeElement;
-    
-    // Context menu state
-    let showContextMenu = false;
-    let contextMenuX = 0;
-    let contextMenuY = 0;
     
     // Get node type styling
     function getNodeStyle(type) {
@@ -72,6 +66,11 @@
             label: 'Copy Config',
             icon: '⚙️',
             action: 'copy-config'
+        },
+        {
+            label: 'Copy Metadata',
+            icon: '🔧',
+            action: 'copy-metadata'
         },
         {
             label: 'Paste Config',
@@ -134,17 +133,36 @@
         event.preventDefault();
         event.stopPropagation();
         
-        // Position context menu at mouse position
-        contextMenuX = event.clientX;
-        contextMenuY = event.clientY;
-        showContextMenu = true;
-        
         // Select this node
         canvasState.update(s => ({ 
             ...s, 
             selectedNode: node.id, 
             selectedConnection: null 
         }));
+        
+        // Use global context menu system
+        if (window.showCanvasContextMenu) {
+            const menuItems = contextMenuItems.filter(item => !item.separator).map(item => ({
+                label: item.label,
+                icon: item.icon,
+                handler: () => handleContextMenuAction({ detail: { action: item.action } }),
+                disabled: item.disabled
+            }));
+            
+            // Add separators back in their original positions
+            const menuWithSeparators = [];
+            let itemIndex = 0;
+            contextMenuItems.forEach(item => {
+                if (item.separator) {
+                    menuWithSeparators.push({ separator: true });
+                } else {
+                    menuWithSeparators.push(menuItems[itemIndex]);
+                    itemIndex++;
+                }
+            });
+            
+            window.showCanvasContextMenu(event.clientX, event.clientY, menuWithSeparators);
+        }
     }
     
     async function handleContextMenuAction(event) {
@@ -163,27 +181,57 @@
                     
                 case 'copy-config':
                     const nodeData = nodeActions.getNodeData(node.id);
+                    console.log('Retrieved node data:', nodeData);
                     if (nodeData) {
                         const configResult = await copyNodeConfig(nodeData);
                         if (configResult.success) {
-                            console.log('Node config copied to clipboard');
+                            console.log('Node config copied to clipboard successfully');
+                            console.log('Config:', configResult.elegantConfig);
                         } else {
                             console.error('Failed to copy config:', configResult.error);
                         }
+                    } else {
+                        console.error('No node data found for node:', node.id);
+                    }
+                    break;
+                    
+                case 'copy-metadata':
+                    const nodeDataForMetadata = nodeActions.getNodeData(node.id);
+                    console.log('Retrieved node data for metadata:', nodeDataForMetadata);
+                    if (nodeDataForMetadata) {
+                        const metadataResult = await copyNodeMetadata(nodeDataForMetadata);
+                        if (metadataResult.success) {
+                            console.log('Node metadata copied to clipboard successfully');
+                            console.log('Metadata YAML:', metadataResult.yamlConfig);
+                        } else {
+                            console.error('Failed to copy metadata:', metadataResult.error);
+                        }
+                    } else {
+                        console.error('No node data found for node:', node.id);
                     }
                     break;
                     
                 case 'paste-config':
                     const pasteResult = await pasteConfig();
-                    if (pasteResult.success && pasteResult.type === 'node_config') {
-                        const config = pasteResult.data.config;
-                        console.log('Pasting node config to node:', node.id);
+                    if (pasteResult.success) {
+                        let config = null;
                         
-                        const applyResult = nodeActions.applyNodeConfig(node.id, config);
-                        if (applyResult.success) {
-                            console.log('Node config applied successfully');
+                        if (pasteResult.type === 'node_config' || pasteResult.type === 'raw_yaml') {
+                            config = pasteResult.data.config;
+                        }
+                        
+                        if (config) {
+                            console.log('Pasting YAML config to node:', node.id);
+                            console.log('YAML content:', config);
+                            
+                            const applyResult = nodeActions.applyNodeConfig(node.id, config);
+                            if (applyResult.success) {
+                                console.log('Node config applied successfully');
+                            } else {
+                                console.error('Failed to apply config:', applyResult.error);
+                            }
                         } else {
-                            console.error('Failed to apply config:', applyResult.error);
+                            console.error('No valid config found in paste data');
                         }
                     } else {
                         console.error('Failed to paste config:', pasteResult.error);
@@ -429,14 +477,6 @@
     ></div>
 </div>
 
-<!-- Context Menu -->
-<ContextMenu 
-    bind:visible={showContextMenu}
-    x={contextMenuX}
-    y={contextMenuY}
-    items={contextMenuItems}
-    on:item-click={handleContextMenuAction}
-/>
 
 <style>
     .node-card {

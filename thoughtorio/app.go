@@ -778,3 +778,28 @@ func (a *App) saveRecentCanvases(recents []RecentCanvas) error {
 	
 	return os.WriteFile(recentsFile, data, 0644)
 }
+
+// Clipboard operations for Wails desktop app
+type ClipboardResult struct {
+	Success bool   `json:"success"`
+	Data    string `json:"data,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// SetClipboard writes text to the system clipboard
+func (a *App) SetClipboard(text string) ClipboardResult {
+	err := runtime.ClipboardSetText(a.ctx, text)
+	if err != nil {
+		return ClipboardResult{Success: false, Error: fmt.Sprintf("Failed to set clipboard: %v", err)}
+	}
+	return ClipboardResult{Success: true}
+}
+
+// GetClipboard reads text from the system clipboard
+func (a *App) GetClipboard() ClipboardResult {
+	text, err := runtime.ClipboardGetText(a.ctx)
+	if err != nil {
+		return ClipboardResult{Success: false, Error: fmt.Sprintf("Failed to get clipboard: %v", err)}
+	}
+	return ClipboardResult{Success: true, Data: text}
+}
