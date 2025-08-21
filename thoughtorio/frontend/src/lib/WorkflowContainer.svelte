@@ -1,6 +1,8 @@
 <script>
     import { executionState, workflowActions } from '../stores/workflows.js';
-    import { nodeActions } from '../stores/nodes.js';
+    import { nodeActions, nodeDataStore } from '../stores/nodes.js';
+    import ContextMenu from './ContextMenu.svelte';
+    import { copyText, copyMachineConfig, pasteConfig } from './clipboard.js';
     
     export let container;
     export let blockNodeInteractions = false;
@@ -9,8 +11,40 @@
     let dragOffset = { x: 0, y: 0 };
     let mouseDownPos = { x: 0, y: 0 };
     
+    // Context menu state
+    let showContextMenu = false;
+    let contextMenuX = 0;
+    let contextMenuY = 0;
+    
     $: isExecuting = $executionState.activeWorkflows.has(container.id);
     $: showPlayButton = container.isWorkflow && container.nodes.length > 1;
+    
+    // Context menu items for node machines
+    $: contextMenuItems = [
+        {
+            label: 'Copy All Text',
+            icon: '📄',
+            action: 'copy-text',
+            disabled: container.nodes.length === 0
+        },
+        {
+            label: 'Copy Machine Config',
+            icon: '⚙️',
+            action: 'copy-config'
+        },
+        {
+            label: 'Paste Machine Config',
+            icon: '📋',
+            action: 'paste-config'
+        },
+        { separator: true },
+        {
+            label: `${isExecuting ? 'Stop' : 'Run'} Machine`,
+            icon: isExecuting ? '⏹️' : '▶️',
+            action: isExecuting ? 'stop' : 'execute',
+            disabled: !showPlayButton
+        }
+    ];
     
     // Debug execution state changes
     $: {
@@ -101,6 +135,72 @@
             workflowActions.stop(container.id);
         }
     }
+    
+    function handleRightClick(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        // Position context menu at mouse position
+        contextMenuX = event.clientX;
+        contextMenuY = event.clientY;
+        showContextMenu = true;
+    }
+    
+    async function handleContextMenuAction(event) {
+        const action = event.detail.action;
+        
+        try {
+            switch (action) {
+                case 'copy-text':
+                    // Collect all text content from nodes in the machine
+                    const allText = container.nodes
+                        .filter(node => node.content)
+                        .map(node => `${node.title}:\n${node.content}`)
+                        .join('\n\n---\n\n');
+                    
+                    if (allText) {
+                        const textResult = await copyText(allText);
+                        if (textResult.success) {
+                            console.log('Machine text copied to clipboard');
+                        } else {
+                            console.error('Failed to copy text:', textResult.error);
+                        }
+                    }
+                    break;
+                    
+                case 'copy-config':
+                    const configResult = await copyMachineConfig(container, $nodeDataStore);
+                    if (configResult.success) {
+                        console.log('Machine config copied to clipboard');
+                    } else {
+                        console.error('Failed to copy machine config:', configResult.error);
+                    }
+                    break;
+                    
+                case 'paste-config':
+                    const pasteResult = await pasteConfig();
+                    if (pasteResult.success && pasteResult.type === 'machine_config') {
+                        const config = pasteResult.data;
+                        console.log('Pasting machine config:', config);
+                        // TODO: Implement machine config application
+                        console.log('Machine config paste not yet implemented');
+                    } else {
+                        console.error('Failed to paste machine config:', pasteResult.error);
+                    }
+                    break;
+                    
+                case 'execute':
+                    executeWorkflow();
+                    break;
+                    
+                case 'stop':
+                    stopWorkflow();
+                    break;
+            }
+        } catch (error) {
+            console.error('Context menu action failed:', error);
+        }
+    }
 </script>
 
 {#if container.isWorkflow}
@@ -115,6 +215,7 @@
             height: {container.bounds.height}px;
         "
         on:mousedown={handleMouseDown}
+        on:contextmenu={handleRightClick}
     >
         <!-- Container border -->
         <div class="container-border"></div>
@@ -155,6 +256,15 @@
         </div>
     </div>
 {/if}
+
+<!-- Context Menu -->
+<ContextMenu 
+    bind:visible={showContextMenu}
+    x={contextMenuX}
+    y={contextMenuY}
+    items={contextMenuItems}
+    on:item-click={handleContextMenuAction}
+/>
 
 <style>
     .workflow-container {

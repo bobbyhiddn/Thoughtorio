@@ -3,6 +3,8 @@
     import { canvasState } from '../stores/canvas.js';
     import { nodeActions } from '../stores/nodes.js';
     import { executionState } from '../stores/workflows.js';
+    import ContextMenu from './ContextMenu.svelte';
+    import { copyText, copyNodeConfig, pasteConfig } from './clipboard.js';
     
     export let node;
     export let startConnection = null;
@@ -18,6 +20,11 @@
     let mouseDownTime = 0;
     let mouseDownPos = { x: 0, y: 0 };
     let nodeElement;
+    
+    // Context menu state
+    let showContextMenu = false;
+    let contextMenuX = 0;
+    let contextMenuY = 0;
     
     // Get node type styling
     function getNodeStyle(type) {
@@ -52,6 +59,33 @@
     $: nodeStyle = getNodeStyle(node.type);
     $: isExecuting = $executionState.activeNodes.has(node.id);
     $: isCompleted = $executionState.completedNodes.has(node.id);
+    
+    // Context menu items
+    $: contextMenuItems = [
+        {
+            label: 'Copy Text',
+            icon: '📄',
+            action: 'copy-text',
+            disabled: !node.content
+        },
+        {
+            label: 'Copy Config',
+            icon: '⚙️',
+            action: 'copy-config'
+        },
+        {
+            label: 'Paste Config',
+            icon: '📋',
+            action: 'paste-config'
+        },
+        { separator: true },
+        {
+            label: 'Delete Node',
+            icon: '🗑️',
+            action: 'delete',
+            shortcut: 'Del'
+        }
+    ];
     
     // Handle node interactions
     function handleMouseDown(event) {
@@ -94,6 +128,75 @@
             selectedNode: node.id, 
             selectedConnection: null 
         }));
+    }
+    
+    function handleRightClick(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        // Position context menu at mouse position
+        contextMenuX = event.clientX;
+        contextMenuY = event.clientY;
+        showContextMenu = true;
+        
+        // Select this node
+        canvasState.update(s => ({ 
+            ...s, 
+            selectedNode: node.id, 
+            selectedConnection: null 
+        }));
+    }
+    
+    async function handleContextMenuAction(event) {
+        const action = event.detail.action;
+        
+        try {
+            switch (action) {
+                case 'copy-text':
+                    const textResult = await copyText(node.content);
+                    if (textResult.success) {
+                        console.log('Node text copied to clipboard');
+                    } else {
+                        console.error('Failed to copy text:', textResult.error);
+                    }
+                    break;
+                    
+                case 'copy-config':
+                    const nodeData = nodeActions.getNodeData(node.id);
+                    if (nodeData) {
+                        const configResult = await copyNodeConfig(nodeData);
+                        if (configResult.success) {
+                            console.log('Node config copied to clipboard');
+                        } else {
+                            console.error('Failed to copy config:', configResult.error);
+                        }
+                    }
+                    break;
+                    
+                case 'paste-config':
+                    const pasteResult = await pasteConfig();
+                    if (pasteResult.success && pasteResult.type === 'node_config') {
+                        const config = pasteResult.data.config;
+                        console.log('Pasting node config to node:', node.id);
+                        
+                        const applyResult = nodeActions.applyNodeConfig(node.id, config);
+                        if (applyResult.success) {
+                            console.log('Node config applied successfully');
+                        } else {
+                            console.error('Failed to apply config:', applyResult.error);
+                        }
+                    } else {
+                        console.error('Failed to paste config:', pasteResult.error);
+                    }
+                    break;
+                    
+                case 'delete':
+                    nodeActions.delete(node.id);
+                    break;
+            }
+        } catch (error) {
+            console.error('Context menu action failed:', error);
+        }
     }
     
     function handleGlobalMouseMove(event) {
@@ -245,6 +348,7 @@
     "
     on:mousedown={handleMouseDown}
     on:click={handleClick}
+    on:contextmenu={handleRightClick}
     on:keydown={handleNodeActivation}
     role="button"
     tabindex="0"
@@ -324,6 +428,15 @@
         on:mouseup={(e) => handlePortMouseUp(e, 'output')}
     ></div>
 </div>
+
+<!-- Context Menu -->
+<ContextMenu 
+    bind:visible={showContextMenu}
+    x={contextMenuX}
+    y={contextMenuY}
+    items={contextMenuItems}
+    on:item-click={handleContextMenuAction}
+/>
 
 <style>
     .node-card {

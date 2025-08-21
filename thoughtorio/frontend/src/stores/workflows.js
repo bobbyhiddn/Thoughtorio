@@ -1,5 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
-import { nodes, connections, nodeActions } from './nodes.js';
+import { nodes, connections, nodeActions, nodeDataStore } from './nodes.js';
 import { settings } from './settings.js';
 
 // A derived store that creates a key representing the state of all nodes.
@@ -274,16 +274,25 @@ async function processNodeWithContext(currentNode, container, settings, apiKey, 
     
     console.log('Processing node with context:', currentNode.id, 'Context steps:', contextEnvelope.steps.length);
     
+    // Get YAML backend data
+    const nodeData = nodeActions.getNodeData(currentNode.id);
+    if (!nodeData) {
+        console.error('No YAML data found for node:', currentNode.id);
+        return;
+    }
+    
     // Mark node as executing
     workflowActions.setNodeExecuting(currentNode.id);
+    nodeActions.setNodeExecuting(currentNode.id);
     
-    // If this is an AI node, process it with full context
+    // If this is an AI node, process it with YAML context
     if (currentNode.type === 'dynamic') {
-        await processAINodeWithContext(currentNode, container, settings, apiKey, contextEnvelope);
+        await processAINodeWithYAMLContext(currentNode, nodeData, container, settings, apiKey);
     }
     
     // Mark node as completed
     workflowActions.setNodeCompleted(currentNode.id);
+    nodeActions.setNodeCompleted(currentNode.id);
     
     // Find all nodes connected from this one and process them recursively
     const outgoingConnections = container.connections.filter(conn => conn.fromId === currentNode.id);
@@ -362,7 +371,55 @@ function createContextEnvelope() {
     };
 }
 
-// Process an AI node with full contextual envelope
+// Process an AI node with YAML context data
+async function processAINodeWithYAMLContext(aiNode, nodeData, container, settings, apiKey) {
+    console.log('Processing AI node with YAML context:', aiNode.id);
+    console.log('Node YAML data:', nodeData.toYAML());
+    
+    // Get processed input from YAML backend
+    const inputText = nodeData.getProcessedInput();
+    
+    if (!inputText.trim()) {
+        console.log('No input text found for AI node:', aiNode.id);
+        return;
+    }
+    
+    console.log('Input text for AI processing:', inputText);
+    
+    try {
+        // Check if Wails runtime is available
+        if (!window.go || !window.go.main || !window.go.main.App) {
+            console.warn('Wails runtime not available - simulating AI completion');
+            const simulatedResponse = `AI processed YAML context: "${inputText.substring(0, 100)}..." - This is a simulated response with YAML backend.`;
+            
+            // Update the AI node with the result
+            nodeActions.setNodeCompleted(aiNode.id, simulatedResponse);
+            return;
+        }
+        
+        // Call the AI completion function with YAML context
+        const response = await window.go.main.App.GetAICompletion(
+            settings.activeMode,
+            settings.story_processing_model_id,
+            inputText,
+            apiKey
+        );
+        
+        console.log('AI completion response:', response);
+        
+        if (response && response.Content) {
+            nodeActions.setNodeCompleted(aiNode.id, response.Content);
+        } else if (response && response.Error) {
+            const errorMsg = `Error: ${response.Error}`;
+            nodeActions.setNodeError(aiNode.id, new Error(errorMsg));
+        }
+    } catch (error) {
+        console.error('AI processing failed:', error);
+        nodeActions.setNodeError(aiNode.id, error);
+    }
+}
+
+// Legacy function - Process an AI node with full contextual envelope
 async function processAINodeWithContext(aiNode, container, settings, apiKey, contextEnvelope) {
     console.log('Processing AI node with context:', aiNode.id);
     console.log('Context envelope:', contextEnvelope.getFullContext());
