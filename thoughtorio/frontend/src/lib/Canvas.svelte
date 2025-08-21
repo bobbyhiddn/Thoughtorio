@@ -27,6 +27,12 @@
     // Settings panel state
     let showSettings = false;
     
+    // File management state
+    let showRecents = false;
+    let recentCanvases = [];
+    let currentCanvasPath = null;
+    let currentCanvasName = null;
+    
     // Convert screen coordinates to canvas coordinates
     function screenToCanvas(screenX, screenY) {
         const rect = canvasElement.getBoundingClientRect();
@@ -57,13 +63,13 @@
                 viewportActions.pan(-event.deltaX, -event.deltaY);
             }
         } else {
-            // Regular mouse wheel zoom
+            // Regular mouse wheel zoom from viewport center
             const rect = canvasElement.getBoundingClientRect();
-            const centerX = event.clientX - rect.left;
-            const centerY = event.clientY - rect.top;
+            const viewportCenterX = rect.width / 2;
+            const viewportCenterY = rect.height / 2;
             
-            const zoomFactor = event.deltaY > 0 ? 0.9 : 1.1;
-            viewportActions.zoom(zoomFactor, centerX, centerY);
+            const zoomFactor = event.deltaY > 0 ? 0.95 : 1.05;
+            viewportActions.zoom(zoomFactor, viewportCenterX, viewportCenterY);
         }
     }
     
@@ -491,6 +497,277 @@
         }
     }
     
+    // File management functions
+    async function saveCanvas() {
+        if (currentCanvasPath) {
+            // We have a current file, just save to it
+            await saveToCurrentFile();
+        } else {
+            // No current file, show save dialog
+            await saveAsCanvas();
+        }
+    }
+    
+    async function saveAsCanvas() {
+        try {
+            // Create canvas data structure
+            const canvasData = {
+                version: "1.0",
+                created: Date.now(),
+                modified: Date.now(),
+                viewport: $viewport,
+                nodes: $nodes,
+                connections: $connections,
+                metadata: {
+                    nodeCount: $nodes.length,
+                    connectionCount: $connections.length
+                }
+            };
+            
+            console.log('Saving canvas data:', canvasData);
+            
+            // Check if Wails runtime is available
+            if (!window.go || !window.go.main || !window.go.main.App || !window.go.main.App.SaveCanvas) {
+                console.warn('Wails runtime not available - simulating save');
+                alert('Save functionality requires the desktop app. Please run `wails generate` to update bindings.');
+                return;
+            }
+            
+            // Call backend save function
+            const result = await window.go.main.App.SaveCanvas(JSON.stringify(canvasData));
+            if (result.success) {
+                currentCanvasPath = result.path;
+                currentCanvasName = result.path.split('/').pop().replace('.thoughtorio', '');
+                await loadRecentCanvases();
+                console.log('Canvas saved successfully to:', result.path);
+            } else {
+                throw new Error(result.error || 'Failed to save canvas');
+            }
+        } catch (error) {
+            console.error('Failed to save canvas:', error);
+            alert('Failed to save canvas: ' + error.message);
+        }
+    }
+    
+    async function saveToCurrentFile() {
+        try {
+            // Create canvas data structure
+            const canvasData = {
+                version: "1.0",
+                created: Date.now(),
+                modified: Date.now(),
+                viewport: $viewport,
+                nodes: $nodes,
+                connections: $connections,
+                metadata: {
+                    nodeCount: $nodes.length,
+                    connectionCount: $connections.length
+                }
+            };
+            
+            // Use backend to overwrite current file
+            if (!window.go || !window.go.main || !window.go.main.App || !window.go.main.App.SaveCanvas) {
+                console.warn('Wails runtime not available');
+                return;
+            }
+            
+            // For now, just use save-as since we need a backend function for direct file writes
+            await saveAsCanvas();
+        } catch (error) {
+            console.error('Failed to save to current file:', error);
+            await saveAsCanvas();
+        }
+    }
+    
+    function newCanvas() {
+        if ($nodes.length > 0 || $connections.length > 0) {
+            if (!confirm('Create new canvas? All unsaved changes will be lost.')) {
+                return;
+            }
+        }
+        
+        // Clear canvas state
+        nodes.set([]);
+        connections.set([]);
+        viewportActions.reset();
+        currentCanvasPath = null;
+        currentCanvasName = null;
+        
+        // Reset canvas state
+        canvasState.update(s => ({
+            ...s,
+            selectedNode: null,
+            selectedConnection: null,
+            selectedNodes: [],
+            mode: 'select'
+        }));
+        
+        console.log('New canvas created');
+    }
+    
+    async function loadCanvas() {
+        try {
+            console.log('Loading canvas...');
+            
+            // Check if Wails runtime is available
+            if (!window.go || !window.go.main || !window.go.main.App || !window.go.main.App.LoadCanvas) {
+                console.warn('Wails runtime not available - simulating load');
+                alert('Load functionality requires the desktop app. Please run `wails generate` to update bindings.');
+                return;
+            }
+            
+            // Call backend load function
+            const result = await window.go.main.App.LoadCanvas();
+            if (result.success && result.data) {
+                const canvasData = JSON.parse(result.data);
+                
+                // Restore canvas state
+                if (canvasData.viewport) {
+                    viewportActions.setViewport(canvasData.viewport);
+                }
+                
+                // Clear existing data and load new data
+                nodes.set(canvasData.nodes || []);
+                connections.set(canvasData.connections || []);
+                
+                currentCanvasPath = result.path;
+                currentCanvasName = result.path.split('/').pop().replace('.thoughtorio', '');
+                await loadRecentCanvases();
+                
+                console.log('Canvas loaded successfully from:', result.path);
+            } else {
+                throw new Error(result.error || 'Failed to load canvas');
+            }
+        } catch (error) {
+            console.error('Failed to load canvas:', error);
+            alert('Failed to load canvas: ' + error.message);
+        }
+    }
+    
+    async function loadRecentCanvas(recent) {
+        try {
+            console.log('Loading recent canvas:', recent);
+            showRecents = false;
+            
+            // Check if Wails runtime is available
+            if (!window.go || !window.go.main || !window.go.main.App || !window.go.main.App.LoadCanvasFromPath) {
+                console.warn('Wails runtime not available');
+                return;
+            }
+            
+            // Call backend to load specific file
+            const result = await window.go.main.App.LoadCanvasFromPath(recent.path);
+            if (result.success && result.data) {
+                const canvasData = JSON.parse(result.data);
+                
+                // Restore canvas state
+                if (canvasData.viewport) {
+                    viewportActions.setViewport(canvasData.viewport);
+                }
+                
+                // Clear existing data and load new data
+                nodes.set(canvasData.nodes || []);
+                connections.set(canvasData.connections || []);
+                
+                currentCanvasPath = recent.path;
+                await loadRecentCanvases();
+                
+                console.log('Recent canvas loaded successfully');
+            } else {
+                throw new Error(result.error || 'Failed to load recent canvas');
+            }
+        } catch (error) {
+            console.error('Failed to load recent canvas:', error);
+            alert('Failed to load recent canvas: ' + error.message);
+        }
+    }
+    
+    async function loadRecentCanvases() {
+        try {
+            if (!window.go || !window.go.main || !window.go.main.App || !window.go.main.App.GetRecentCanvases) {
+                // Fallback for development
+                recentCanvases = [];
+                return;
+            }
+            
+            const result = await window.go.main.App.GetRecentCanvases();
+            if (result.success) {
+                recentCanvases = result.recents || [];
+            }
+        } catch (error) {
+            console.error('Failed to load recent canvases:', error);
+            recentCanvases = [];
+        }
+    }
+    
+    function toggleRecents() {
+        if (!showRecents) {
+            loadRecentCanvases();
+        }
+        showRecents = !showRecents;
+    }
+    
+    // Fix recents dropdown functionality
+    async function handleRecentClick(recent) {
+        try {
+            console.log('Loading recent canvas:', recent);
+            showRecents = false;
+            
+            // Check if Wails runtime is available
+            if (!window.go || !window.go.main || !window.go.main.App || !window.go.main.App.LoadCanvasFromPath) {
+                console.warn('Wails runtime not available');
+                return;
+            }
+            
+            // Call backend to load specific file
+            const result = await window.go.main.App.LoadCanvasFromPath(recent.path);
+            if (result.success && result.data) {
+                const canvasData = JSON.parse(result.data);
+                
+                // Restore canvas state
+                if (canvasData.viewport) {
+                    viewportActions.setViewport(canvasData.viewport);
+                }
+                
+                // Clear existing data and load new data
+                nodes.set(canvasData.nodes || []);
+                connections.set(canvasData.connections || []);
+                
+                currentCanvasPath = result.path;
+                currentCanvasName = result.path.split('/').pop().replace('.thoughtorio', '');
+                await loadRecentCanvases();
+                
+                console.log('Recent canvas loaded successfully:', result.path);
+            } else {
+                throw new Error(result.error || 'Failed to load recent canvas');
+            }
+        } catch (error) {
+            console.error('Failed to load recent canvas:', error);
+            alert('Failed to load recent canvas: ' + error.message);
+        }
+    }
+    
+    function formatDate(timestamp) {
+        const date = new Date(Number(timestamp));
+        const now = new Date();
+        const diffMs = Number(now) - Number(date);
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        
+        if (diffDays === 0) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } else if (diffDays < 7) {
+            return `${diffDays}d ago`;
+        } else {
+            return date.toLocaleDateString();
+        }
+    }
+    
+    // Load recent canvases on mount
+    import { onMount } from 'svelte';
+    onMount(() => {
+        loadRecentCanvases();
+    });
+    
     // Expose connection functions to child components
     export { startConnection, completeConnection, cancelConnection };
 </script>
@@ -530,7 +807,7 @@
                 <defs>
                     <marker id="arrowhead" markerWidth="10" markerHeight="7" 
                             refX="9" refY="3.5" orient="auto">
-                        <polygon points="0 0, 10 3.5, 0 7" fill="#666" />
+                        <polygon points="0 0, 10 3.5, 0 7" fill="currentColor" />
                     </marker>
                 </defs>
                 
@@ -598,15 +875,92 @@
                 <div class="node-count">{$nodes.length} nodes</div>
             </div>
             <div class="info-right">
-                <button 
-                    class="settings-button" 
-                    on:click={() => showSettings = true}
-                    title="Settings"
-                >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11.03L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.22,8.95 2.27,9.22 2.46,9.37L4.57,11.03C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.22,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.68 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z"/>
-                    </svg>
-                </button>
+                <div class="toolbar-buttons">
+                    <!-- New Canvas Button -->
+                    <button 
+                        class="toolbar-button" 
+                        on:click={newCanvas}
+                        title="New Canvas"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"/>
+                        </svg>
+                    </button>
+                    <!-- Save Button -->
+                    <button 
+                        class="toolbar-button" 
+                        on:click={saveCanvas}
+                        title={currentCanvasPath ? `Save ${currentCanvasName || 'Canvas'}` : 'Save Canvas'}
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M17,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V7L17,3M19,19H5V5H16.17L19,7.83V19M12,12A3,3 0 0,0 9,15A3,3 0 0,0 12,18A3,3 0 0,0 15,15A3,3 0 0,0 12,12Z"/>
+                        </svg>
+                    </button>
+                    <!-- Save As Button (only show if we have a current file) -->
+                    {#if currentCanvasPath}
+                        <button 
+                            class="toolbar-button" 
+                            on:click={saveAsCanvas}
+                            title="Save As..."
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M17,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V7L17,3M12,12A3,3 0 0,0 9,15A3,3 0 0,0 12,18A3,3 0 0,0 15,15A3,3 0 0,0 12,12M6,19V17H8V19H6M6,15V13H8V15H6M6,11V9H8V11H6M6,7V5H8V7H6Z"/>
+                            </svg>
+                        </button>
+                    {/if}
+
+                    <!-- Load Button -->
+                    <button 
+                        class="toolbar-button" 
+                        on:click={loadCanvas}
+                        title="Load Canvas"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/>
+                        </svg>
+                    </button>
+
+                    <!-- Recents Button -->
+                    <button 
+                        class="toolbar-button recents-button" 
+                        on:click={toggleRecents}
+                        title="Recent Canvases"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3"/>
+                        </svg>
+                        {#if showRecents}
+                            <div class="recents-dropdown">
+                                <div class="recents-header">Recent Canvases</div>
+                                {#if recentCanvases.length === 0}
+                                    <div class="recents-empty">No recent canvases</div>
+                                {:else}
+                                    {#each recentCanvases as recent}
+                                        <button 
+                                            class="recent-item"
+                                            on:click={() => handleRecentClick(recent)}
+                                            title={recent.path}
+                                        >
+                                            <div class="recent-name">{recent.name}</div>
+                                            <div class="recent-date">{formatDate(recent.lastOpened)}</div>
+                                        </button>
+                                    {/each}
+                                {/if}
+                            </div>
+                        {/if}
+                    </button>
+
+                    <!-- Settings Button -->
+                    <button 
+                        class="toolbar-button settings-button" 
+                        on:click={() => showSettings = true}
+                        title="Settings"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11.03L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.22,8.95 2.27,9.22 2.46,9.37L4.57,11.03C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.22,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.68 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -627,7 +981,7 @@
     .canvas-viewport {
         flex: 1;
         position: relative;
-        cursor: grab;
+        cursor: url('../assets/cursor-grab.svg') 16 16, grab;
         background: 
             radial-gradient(circle, #ddd 1px, transparent 1px);
         background-size: 20px 20px;
@@ -635,7 +989,7 @@
     }
     
     .canvas-viewport:active {
-        cursor: grabbing;
+        cursor: url('../assets/cursor-grabbing.svg') 16 16, grabbing;
     }
     
     .canvas-viewport:focus {
@@ -657,6 +1011,7 @@
         height: 100%;
         pointer-events: none;
         z-index: 1;
+        overflow: visible;
     }
     
     .connections-layer :global(.connection-group) {
@@ -705,7 +1060,13 @@
         margin: 2px 0;
     }
     
-    .settings-button {
+    .toolbar-buttons {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+    
+    .toolbar-button {
         display: flex;
         align-items: center;
         justify-content: center;
@@ -715,16 +1076,87 @@
         border-radius: 6px;
         background: rgba(255, 255, 255, 0.9);
         color: #6b7280;
-        cursor: pointer;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
         transition: all 0.2s ease;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        position: relative;
     }
     
-    .settings-button:hover {
+    .toolbar-button:hover {
         background: white;
         color: #4f46e5;
         transform: translateY(-1px);
         box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+    }
+    
+    .recents-button {
+        position: relative;
+    }
+    
+    .recents-dropdown {
+        position: absolute;
+        top: 100%;
+        right: 0;
+        margin-top: 8px;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+        min-width: 280px;
+        max-width: 400px;
+        z-index: 1000;
+        overflow: hidden;
+    }
+    
+    .recents-header {
+        padding: 12px 16px;
+        background: #f9fafb;
+        border-bottom: 1px solid #e5e7eb;
+        font-weight: 600;
+        font-size: 14px;
+        color: #374151;
+    }
+    
+    .recents-empty {
+        padding: 20px 16px;
+        text-align: center;
+        color: #9ca3af;
+        font-size: 14px;
+    }
+    
+    .recent-item {
+        display: block;
+        width: 100%;
+        padding: 12px 16px;
+        border: none;
+        background: none;
+        text-align: left;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
+        transition: background-color 0.15s ease;
+        border-bottom: 1px solid #f3f4f6;
+    }
+    
+    .recent-item:last-child {
+        border-bottom: none;
+    }
+    
+    .recent-item:hover {
+        background: #f9fafb;
+    }
+    
+    .recent-name {
+        font-weight: 500;
+        font-size: 14px;
+        color: #374151;
+        margin-bottom: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .recent-date {
+        font-size: 12px;
+        color: #9ca3af;
     }
     
     :global(.temp-connection) {

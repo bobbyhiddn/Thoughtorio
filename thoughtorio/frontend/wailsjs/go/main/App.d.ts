@@ -12,4 +12,12 @@ export function FetchOpenRouterModels(arg1:string):Promise<Array<main.Model>>;
 
 export function GetAICompletion(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.AICompletionResponse>;
 
+export function GetRecentCanvases():Promise<main.RecentCanvasesResult>;
+
 export function Greet(arg1:string):Promise<string>;
+
+export function LoadCanvas():Promise<main.CanvasFileResult>;
+
+export function LoadCanvasFromPath(arg1:string):Promise<main.CanvasFileResult>;
+
+export function SaveCanvas(arg1:string):Promise<main.CanvasFileResult>;

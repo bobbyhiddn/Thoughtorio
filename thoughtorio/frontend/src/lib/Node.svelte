@@ -2,6 +2,7 @@
     import { onMount, afterUpdate } from 'svelte';
     import { canvasState } from '../stores/canvas.js';
     import { nodeActions } from '../stores/nodes.js';
+    import { executionState } from '../stores/workflows.js';
     
     export let node;
     export let startConnection = null;
@@ -49,6 +50,8 @@
     }
     
     $: nodeStyle = getNodeStyle(node.type);
+    $: isExecuting = $executionState.activeNodes.has(node.id);
+    $: isCompleted = $executionState.completedNodes.has(node.id);
     
     // Handle node interactions
     function handleMouseDown(event) {
@@ -232,6 +235,8 @@
     class="node-card"
     class:selected={isSelected}
     class:dragging={isDragging}
+    class:executing={isExecuting}
+    class:completed={isCompleted}
     style="
         left: {node.x}px; 
         top: {node.y}px;
@@ -253,6 +258,16 @@
             on:input={handleTitleChange}
             on:click|stopPropagation
         />
+        
+        <!-- Execution indicator -->
+        {#if isExecuting}
+            <div class="execution-indicator">
+                <div class="spinner"></div>
+            </div>
+        {:else if isCompleted}
+            <div class="completion-indicator">✓</div>
+        {/if}
+        
         <button 
             class="delete-btn"
             on:click|stopPropagation={() => nodeActions.delete(node.id)}
@@ -317,9 +332,9 @@
         border-radius: 8px;
         border: 2px solid #ddd;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        cursor: move;
+        cursor: url('../assets/cursor-grab.svg') 16 16, move;
         min-height: 120px;
-        max-width: 600px;
+        width: 250px;
         user-select: none;
         transition: box-shadow 0.2s ease;
     }
@@ -336,6 +351,7 @@
     .node-card.dragging {
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
         transform: scale(1.02);
+        cursor: url('../assets/cursor-grabbing.svg') 16 16, grabbing;
     }
     
     .node-header {
@@ -359,14 +375,14 @@
         font-weight: 600;
         font-size: 14px;
         outline: none;
-        cursor: text;
+        cursor: url('../assets/cursor-text.svg') 16 16, text;
     }
     
     .delete-btn {
         background: none;
         border: none;
         font-size: 18px;
-        cursor: pointer;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
         color: #999;
         padding: 0;
         width: 20px;
@@ -401,7 +417,7 @@
     }
     
     .content-display {
-        cursor: text;
+        cursor: url('../assets/cursor-text.svg') 16 16, text;
         min-height: 40px;
         font-size: 13px;
         line-height: 1.4;
@@ -430,7 +446,7 @@
         border-radius: 50%;
         background: #fff;
         border: 2px solid #666;
-        cursor: crosshair;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
     }
     
     .input-port {
@@ -455,5 +471,53 @@
         background: #4caf50;
         border-color: #4caf50;
         box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
+    }
+    
+    /* Execution state styles */
+    .node-card.executing {
+        border-color: #ff9800 !important;
+        box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.15);
+        animation: pulse-executing 2s ease-in-out infinite;
+    }
+    
+    .node-card.completed {
+        border-color: #4caf50 !important;
+        box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3), 0 4px 16px rgba(0, 0, 0, 0.15);
+    }
+    
+    @keyframes pulse-executing {
+        0%, 100% {
+            box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.15);
+        }
+        50% {
+            box-shadow: 0 0 0 6px rgba(255, 152, 0, 0.2), 0 6px 20px rgba(255, 152, 0, 0.1);
+        }
+    }
+    
+    .execution-indicator {
+        display: flex;
+        align-items: center;
+        margin-right: 8px;
+    }
+    
+    .spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #ff9800;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    
+    .completion-indicator {
+        color: #4caf50;
+        font-weight: bold;
+        font-size: 16px;
+        margin-right: 8px;
     }
 </style>

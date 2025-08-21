@@ -113,6 +113,8 @@ function createWorkflowContainer(nodeGroup, connectionList) {
 // Workflow execution state
 export const executionState = writable({
     activeWorkflows: new Set(),
+    activeNodes: new Set(),
+    completedNodes: new Set(),
     results: new Map()
 });
 
@@ -123,7 +125,9 @@ export const workflowActions = {
         
         executionState.update(state => ({
             ...state,
-            activeWorkflows: new Set([...state.activeWorkflows, workflowId])
+            activeWorkflows: new Set([...state.activeWorkflows, workflowId]),
+            activeNodes: new Set(),
+            completedNodes: new Set()
         }));
         
         try {
@@ -172,7 +176,28 @@ export const workflowActions = {
             newActive.delete(workflowId);
             return {
                 ...state,
-                activeWorkflows: newActive
+                activeWorkflows: newActive,
+                activeNodes: new Set(),
+                completedNodes: new Set()
+            };
+        });
+    },
+
+    setNodeExecuting: (nodeId) => {
+        executionState.update(state => ({
+            ...state,
+            activeNodes: new Set([...state.activeNodes, nodeId])
+        }));
+    },
+
+    setNodeCompleted: (nodeId) => {
+        executionState.update(state => {
+            const newActive = new Set(state.activeNodes);
+            newActive.delete(nodeId);
+            return {
+                ...state,
+                activeNodes: newActive,
+                completedNodes: new Set([...state.completedNodes, nodeId])
             };
         });
     }
@@ -225,42 +250,194 @@ async function executeWorkflow(container) {
     }
 }
 
-// Process a chain of nodes starting from an input node
+// Process a chain of nodes starting from an input node with contextual envelope
 async function processNodeChain(startNode, container, settings, apiKey) {
     console.log('Processing node chain from:', startNode);
     
     const visited = new Set();
-    const nodeQueue = [startNode];
+    const contextEnvelope = createContextEnvelope();
     
-    while (nodeQueue.length > 0) {
-        const currentNode = nodeQueue.shift();
-        
-        if (visited.has(currentNode.id)) {
-            continue;
-        }
-        visited.add(currentNode.id);
-        
-        console.log('Processing node:', currentNode);
-        
-        // If this is an AI node, process it
-        if (currentNode.type === 'dynamic') {
-            await processAINode(currentNode, container, settings, apiKey);
-        }
-        
-        // Find all nodes connected from this one
-        const outgoingConnections = container.connections.filter(conn => conn.fromId === currentNode.id);
-        for (const connection of outgoingConnections) {
-            const nextNode = container.nodes.find(node => node.id === connection.toId);
-            if (nextNode && !visited.has(nextNode.id)) {
-                nodeQueue.push(nextNode);
+    // Add initial context from the start node
+    if (startNode.content) {
+        contextEnvelope.addStep(startNode.id, startNode.type, startNode.content, 'user_input');
+    }
+    
+    await processNodeWithContext(startNode, container, settings, apiKey, contextEnvelope, visited);
+}
+
+// Process a single node with accumulated context
+async function processNodeWithContext(currentNode, container, settings, apiKey, contextEnvelope, visited) {
+    if (visited.has(currentNode.id)) {
+        return;
+    }
+    visited.add(currentNode.id);
+    
+    console.log('Processing node with context:', currentNode.id, 'Context steps:', contextEnvelope.steps.length);
+    
+    // Mark node as executing
+    workflowActions.setNodeExecuting(currentNode.id);
+    
+    // If this is an AI node, process it with full context
+    if (currentNode.type === 'dynamic') {
+        await processAINodeWithContext(currentNode, container, settings, apiKey, contextEnvelope);
+    }
+    
+    // Mark node as completed
+    workflowActions.setNodeCompleted(currentNode.id);
+    
+    // Find all nodes connected from this one and process them recursively
+    const outgoingConnections = container.connections.filter(conn => conn.fromId === currentNode.id);
+    for (const connection of outgoingConnections) {
+        const nextNode = container.nodes.find(node => node.id === connection.toId);
+        if (nextNode && !visited.has(nextNode.id)) {
+            // Create a new context branch for this path
+            const branchedContext = contextEnvelope.branch();
+            
+            // Add current node's output to context if it has content
+            if (currentNode.content) {
+                branchedContext.addStep(currentNode.id, currentNode.type, currentNode.content, 
+                    currentNode.type === 'dynamic' ? 'ai_output' : 'user_input');
             }
+            
+            // Process the next node with the updated context
+            await processNodeWithContext(nextNode, container, settings, apiKey, branchedContext, visited);
         }
     }
 }
 
-// Process a single AI node
+// Create a context envelope to track workflow history
+function createContextEnvelope() {
+    return {
+        steps: [],
+        metadata: {
+            workflowId: crypto.randomUUID(),
+            startTime: Date.now(),
+            version: '1.0'
+        },
+        
+        addStep(nodeId, nodeType, content, role) {
+            this.steps.push({
+                nodeId,
+                nodeType,
+                content: content.trim(),
+                role, // 'user_input', 'ai_output', 'system'
+                timestamp: Date.now(),
+                stepIndex: this.steps.length
+            });
+        },
+        
+        getFullContext() {
+            return this.steps.map(step => `[${step.role.toUpperCase()}]: ${step.content}`).join('\n\n');
+        },
+        
+        getContextForAI() {
+            // Create a clean, natural conversation history
+            const contextParts = [];
+            
+            this.steps.forEach((step, index) => {
+                if (step.role === 'user_input') {
+                    contextParts.push(`Human: ${step.content}`);
+                } else if (step.role === 'ai_output') {
+                    contextParts.push(`Assistant: ${step.content}`);
+                }
+            });
+            
+            // Just return the natural conversation format
+            return contextParts.join('\n\n');
+        },
+        
+        branch() {
+            // Create a copy of this context for parallel processing paths
+            return {
+                ...this,
+                steps: [...this.steps],
+                metadata: { ...this.metadata }
+            };
+        },
+        
+        getLastUserInput() {
+            const userInputs = this.steps.filter(step => step.role === 'user_input');
+            return userInputs.length > 0 ? userInputs[userInputs.length - 1].content : '';
+        }
+    };
+}
+
+// Process an AI node with full contextual envelope
+async function processAINodeWithContext(aiNode, container, settings, apiKey, contextEnvelope) {
+    console.log('Processing AI node with context:', aiNode.id);
+    console.log('Context envelope:', contextEnvelope.getFullContext());
+    
+    // Find all input connections to this AI node
+    const inputConnections = container.connections.filter(conn => conn.toId === aiNode.id);
+    
+    // Gather immediate input text from connected nodes
+    let immediateInput = '';
+    for (const connection of inputConnections) {
+        const inputNode = container.nodes.find(node => node.id === connection.fromId);
+        if (inputNode && inputNode.content) {
+            immediateInput += inputNode.content + '\n';
+        }
+    }
+    
+    // If there's immediate input, add it to context
+    if (immediateInput.trim()) {
+        contextEnvelope.addStep(aiNode.id + '_input', 'input', immediateInput.trim(), 'user_input');
+    }
+    
+    // Use contextual prompt instead of just immediate input
+    const contextualPrompt = contextEnvelope.getContextForAI();
+    
+    if (!contextualPrompt.trim()) {
+        console.log('No context found for AI node:', aiNode.id);
+        return;
+    }
+    
+    console.log('Contextual prompt for AI processing:', contextualPrompt);
+    
+    try {
+        // Check if Wails runtime is available
+        if (!window.go || !window.go.main || !window.go.main.App) {
+            console.warn('Wails runtime not available - simulating AI completion');
+            const simulatedResponse = `AI processed with context (${contextEnvelope.steps.length} steps): "${contextEnvelope.getLastUserInput()}" - This is a simulated contextual response.`;
+            
+            // Update the AI node with the result
+            nodeActions.update(aiNode.id, { content: simulatedResponse });
+            
+            // Add AI response to context envelope
+            contextEnvelope.addStep(aiNode.id, aiNode.type, simulatedResponse, 'ai_output');
+            return;
+        }
+        
+        // Call the AI completion function with full context
+        const response = await window.go.main.App.GetAICompletion(
+            settings.activeMode,
+            settings.story_processing_model_id,
+            contextualPrompt,
+            apiKey
+        );
+        
+        console.log('AI completion response:', response);
+        
+        if (response && response.Content) {
+            nodeActions.update(aiNode.id, { content: response.Content });
+            // Add AI response to context envelope
+            contextEnvelope.addStep(aiNode.id, aiNode.type, response.Content, 'ai_output');
+        } else if (response && response.Error) {
+            const errorMsg = `Error: ${response.Error}`;
+            nodeActions.update(aiNode.id, { content: errorMsg });
+            contextEnvelope.addStep(aiNode.id, aiNode.type, errorMsg, 'ai_output');
+        }
+    } catch (error) {
+        console.error('AI processing failed:', error);
+        const errorMsg = `Error: ${error.message}`;
+        nodeActions.update(aiNode.id, { content: errorMsg });
+        contextEnvelope.addStep(aiNode.id, aiNode.type, errorMsg, 'ai_output');
+    }
+}
+
+// Legacy function for backwards compatibility (not used in new context system)
 async function processAINode(aiNode, container, settings, apiKey) {
-    console.log('Processing AI node:', aiNode);
+    console.log('Processing AI node (legacy):', aiNode);
     
     // Find all input connections to this AI node
     const inputConnections = container.connections.filter(conn => conn.toId === aiNode.id);
@@ -285,10 +462,8 @@ async function processAINode(aiNode, container, settings, apiKey) {
         // Check if Wails runtime is available
         if (!window.go || !window.go.main || !window.go.main.App) {
             console.warn('Wails runtime not available - simulating AI completion');
-            // Simulate AI completion for development
             const simulatedResponse = `AI processed: "${inputText.trim()}" - This is a simulated response since Wails runtime is not available.`;
             
-            // Update the AI node with the result
             nodeActions.update(aiNode.id, { content: simulatedResponse });
             return;
         }
@@ -310,7 +485,6 @@ async function processAINode(aiNode, container, settings, apiKey) {
         }
     } catch (error) {
         console.error('AI processing failed:', error);
-        // Update the AI node with error message
         nodeActions.update(aiNode.id, { content: `Error: ${error.message}` });
     }
 }

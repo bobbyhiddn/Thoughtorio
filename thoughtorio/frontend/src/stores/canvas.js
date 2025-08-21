@@ -45,5 +45,13 @@ export const viewportActions = {
     
     reset: () => {
         viewport.set({ x: 0, y: 0, zoom: 1 });
+    },
+    
+    setViewport: (newViewport) => {
+        viewport.set({
+            x: newViewport.x || 0,
+            y: newViewport.y || 0,
+            zoom: newViewport.zoom || 1
+        });
     }
 };

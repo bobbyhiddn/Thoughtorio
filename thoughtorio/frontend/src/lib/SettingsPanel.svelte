@@ -704,7 +704,7 @@
         border-radius: 6px;
         background: transparent;
         color: #9ca3af;
-        cursor: pointer;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
         transition: all 0.2s ease;
     }
     
@@ -823,7 +823,7 @@
         background: none;
         border: none;
         color: #9ca3af;
-        cursor: pointer;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
         padding: 8px;
         font-size: 16px;
         border-radius: 4px;
@@ -898,7 +898,7 @@
         color: white;
         font-weight: 600;
         font-size: 14px;
-        cursor: pointer;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
         transition: all 0.3s ease;
         margin-top: 24px;
     }
@@ -911,7 +911,7 @@
     
     .save-button:disabled {
         opacity: 0.6;
-        cursor: not-allowed;
+        cursor: url('../assets/cursor-not-allowed.svg') 16 16, not-allowed;
         background: #4b5563;
         box-shadow: none;
         transform: none;
@@ -945,7 +945,7 @@
         gap: 12px;
         font-weight: 400 !important;
         margin-bottom: 0 !important;
-        cursor: pointer;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
         padding: 8px 0;
     }
     

@@ -106,7 +106,7 @@
         margin-bottom: 8px;
         border: 2px solid #ddd;
         border-radius: 6px;
-        cursor: grab;
+        cursor: url('../assets/cursor-grab.svg') 16 16, grab;
         background: white;
         transition: all 0.2s ease;
     }
@@ -117,7 +117,7 @@
     }
     
     .palette-node:active {
-        cursor: grabbing;
+        cursor: url('../assets/cursor-grabbing.svg') 16 16, grabbing;
         transform: scale(0.98);
     }
     

@@ -7,7 +7,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App struct
@@ -552,4 +557,224 @@ func (a *App) getOllamaCompletion(model, prompt string) (AICompletionResponse, e
 	}
 	
 	return AICompletionResponse{Content: result.Response}, nil
+}
+
+// Canvas file management structures
+type CanvasFileResult struct {
+	Success bool   `json:"success"`
+	Path    string `json:"path,omitempty"`
+	Data    string `json:"data,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type RecentCanvas struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	LastOpened int64  `json:"lastOpened"`
+}
+
+type RecentCanvasesResult struct {
+	Success bool            `json:"success"`
+	Recents []RecentCanvas  `json:"recents,omitempty"`
+	Error   string          `json:"error,omitempty"`
+}
+
+// SaveCanvas opens a save dialog and saves the canvas data to the selected file
+func (a *App) SaveCanvas(canvasData string) CanvasFileResult {
+	// Open save file dialog
+	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save Canvas",
+		DefaultFilename: "canvas.thoughtorio",
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "Thoughtorio Canvas Files (*.thoughtorio)",
+				Pattern:     "*.thoughtorio",
+			},
+			{
+				DisplayName: "JSON Files (*.json)",
+				Pattern:     "*.json",
+			},
+		},
+	})
+	
+	if err != nil {
+		return CanvasFileResult{Success: false, Error: fmt.Sprintf("Failed to open save dialog: %v", err)}
+	}
+	
+	if filePath == "" {
+		return CanvasFileResult{Success: false, Error: "Save cancelled by user"}
+	}
+	
+	// Write canvas data to file
+	err = os.WriteFile(filePath, []byte(canvasData), 0644)
+	if err != nil {
+		return CanvasFileResult{Success: false, Error: fmt.Sprintf("Failed to write file: %v", err)}
+	}
+	
+	// Update recent canvases list
+	a.addToRecentCanvases(filePath)
+	
+	return CanvasFileResult{Success: true, Path: filePath}
+}
+
+// LoadCanvas opens a file dialog and loads canvas data from the selected file
+func (a *App) LoadCanvas() CanvasFileResult {
+	// Open file dialog
+	filePath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Load Canvas",
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "Thoughtorio Canvas Files (*.thoughtorio)",
+				Pattern:     "*.thoughtorio",
+			},
+			{
+				DisplayName: "JSON Files (*.json)",
+				Pattern:     "*.json",
+			},
+		},
+	})
+	
+	if err != nil {
+		return CanvasFileResult{Success: false, Error: fmt.Sprintf("Failed to open file dialog: %v", err)}
+	}
+	
+	if filePath == "" {
+		return CanvasFileResult{Success: false, Error: "Load cancelled by user"}
+	}
+	
+	return a.loadCanvasFromPath(filePath)
+}
+
+// LoadCanvasFromPath loads canvas data from a specific file path
+func (a *App) LoadCanvasFromPath(filePath string) CanvasFileResult {
+	return a.loadCanvasFromPath(filePath)
+}
+
+// loadCanvasFromPath is the internal function to load canvas data
+func (a *App) loadCanvasFromPath(filePath string) CanvasFileResult {
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return CanvasFileResult{Success: false, Error: "File does not exist"}
+	}
+	
+	// Read canvas data from file
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return CanvasFileResult{Success: false, Error: fmt.Sprintf("Failed to read file: %v", err)}
+	}
+	
+	// Validate JSON
+	var temp interface{}
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return CanvasFileResult{Success: false, Error: "Invalid canvas file format"}
+	}
+	
+	// Update recent canvases list
+	a.addToRecentCanvases(filePath)
+	
+	return CanvasFileResult{Success: true, Path: filePath, Data: string(data)}
+}
+
+// GetRecentCanvases returns the list of recently opened canvas files
+func (a *App) GetRecentCanvases() RecentCanvasesResult {
+	recents, err := a.loadRecentCanvases()
+	if err != nil {
+		return RecentCanvasesResult{Success: false, Error: fmt.Sprintf("Failed to load recent canvases: %v", err)}
+	}
+	
+	return RecentCanvasesResult{Success: true, Recents: recents}
+}
+
+// addToRecentCanvases adds a file to the recent canvases list
+func (a *App) addToRecentCanvases(filePath string) {
+	recents, _ := a.loadRecentCanvases()
+	
+	// Create new recent entry
+	newRecent := RecentCanvas{
+		Name:       filepath.Base(filePath),
+		Path:       filePath,
+		LastOpened: time.Now().Unix() * 1000, // Milliseconds for JavaScript compatibility
+	}
+	
+	// Remove if already exists
+	for i, recent := range recents {
+		if recent.Path == filePath {
+			recents = append(recents[:i], recents[i+1:]...)
+			break
+		}
+	}
+	
+	// Add to front
+	recents = append([]RecentCanvas{newRecent}, recents...)
+	
+	// Keep only last 10
+	if len(recents) > 10 {
+		recents = recents[:10]
+	}
+	
+	// Save back to file
+	a.saveRecentCanvases(recents)
+}
+
+// loadRecentCanvases loads the recent canvases from storage
+func (a *App) loadRecentCanvases() ([]RecentCanvas, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config directory: %w", err)
+	}
+	
+	thoughtorioDir := filepath.Join(configDir, "thoughtorio")
+	if err := os.MkdirAll(thoughtorioDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create config directory: %w", err)
+	}
+	
+	recentsFile := filepath.Join(thoughtorioDir, "recents.json")
+	
+	// If file doesn't exist, return empty list
+	if _, err := os.Stat(recentsFile); os.IsNotExist(err) {
+		return []RecentCanvas{}, nil
+	}
+	
+	data, err := os.ReadFile(recentsFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read recents file: %w", err)
+	}
+	
+	var recents []RecentCanvas
+	if err := json.Unmarshal(data, &recents); err != nil {
+		return nil, fmt.Errorf("failed to parse recents file: %w", err)
+	}
+	
+	// Filter out files that no longer exist
+	var validRecents []RecentCanvas
+	for _, recent := range recents {
+		if _, err := os.Stat(recent.Path); err == nil {
+			validRecents = append(validRecents, recent)
+		}
+	}
+	
+	// Sort by last opened (most recent first)
+	sort.Slice(validRecents, func(i, j int) bool {
+		return validRecents[i].LastOpened > validRecents[j].LastOpened
+	})
+	
+	return validRecents, nil
+}
+
+// saveRecentCanvases saves the recent canvases to storage
+func (a *App) saveRecentCanvases(recents []RecentCanvas) error {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("failed to get config directory: %w", err)
+	}
+	
+	thoughtorioDir := filepath.Join(configDir, "thoughtorio")
+	recentsFile := filepath.Join(thoughtorioDir, "recents.json")
+	
+	data, err := json.MarshalIndent(recents, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal recents: %w", err)
+	}
+	
+	return os.WriteFile(recentsFile, data, 0644)
 }

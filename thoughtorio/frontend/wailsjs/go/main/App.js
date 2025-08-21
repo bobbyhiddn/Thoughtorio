@@ -22,6 +22,22 @@ export function GetAICompletion(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GetAICompletion'](arg1, arg2, arg3, arg4);
 }
 
+export function GetRecentCanvases() {
+  return window['go']['main']['App']['GetRecentCanvases']();
+}
+
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
+}
+
+export function LoadCanvas() {
+  return window['go']['main']['App']['LoadCanvas']();
+}
+
+export function LoadCanvasFromPath(arg1) {
+  return window['go']['main']['App']['LoadCanvasFromPath'](arg1);
+}
+
+export function SaveCanvas(arg1) {
+  return window['go']['main']['App']['SaveCanvas'](arg1);
 }

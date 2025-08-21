@@ -58,9 +58,16 @@
         
         if (!isDragging) return;
         
-        // Calculate movement delta
-        const deltaX = event.clientX - mouseDownPos.x;
-        const deltaY = event.clientY - mouseDownPos.y;
+        // Calculate movement delta with zoom scaling
+        const canvas = document.querySelector('.canvas-content');
+        const canvasTransform = getComputedStyle(canvas).transform;
+        
+        // Parse transform matrix to get scale
+        const matrix = new DOMMatrix(canvasTransform);
+        const scale = matrix.a; // scale factor
+        
+        const deltaX = (event.clientX - mouseDownPos.x) / scale;
+        const deltaY = (event.clientY - mouseDownPos.y) / scale;
         
         // Move all nodes in the container
         container.nodes.forEach(node => {
@@ -154,11 +161,11 @@
         position: absolute;
         pointer-events: none;
         z-index: 0; /* Behind nodes but above canvas */
-        cursor: grab;
+        cursor: url('../assets/cursor-grab.svg') 16 16, grab;
     }
     
     .workflow-container:active {
-        cursor: grabbing;
+        cursor: url('../assets/cursor-grabbing.svg') 16 16, grabbing;
     }
     
     .workflow-container.dragging {
@@ -210,7 +217,7 @@
         border-radius: 50%;
         background: #4f46e5;
         color: white;
-        cursor: pointer;
+        cursor: url('../assets/cursor-pointer.svg') 16 16, pointer;
         box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
         transition: all 0.2s ease;
     }
@@ -231,7 +238,7 @@
     
     .play-button:disabled {
         opacity: 0.6;
-        cursor: not-allowed;
+        cursor: url('../assets/cursor-not-allowed.svg') 16 16, not-allowed;
         transform: none;
     }
     
