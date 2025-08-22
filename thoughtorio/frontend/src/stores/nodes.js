@@ -1,6 +1,16 @@
 import { writable } from 'svelte/store';
 import { NodeData } from '../lib/NodeData.js';
 
+/**
+ * @typedef {object} Connection
+ * @property {string} id
+ * @property {string} fromId
+ * @property {string} toId
+ * @property {any} fromPort
+ * @property {any} toPort
+ * @property {number} created
+ */
+
 // Nodes on the canvas - now with YAML backend
 export const nodes = writable([]);
 
@@ -8,6 +18,7 @@ export const nodes = writable([]);
 export const nodeDataStore = writable(new Map());
 
 // Connections between nodes
+/** @type {import('svelte/store').Writable<Connection[]>} */
 export const connections = writable([]);
 
 // Helper functions for node operations
@@ -73,11 +84,6 @@ export const nodeActions = {
                 if (nodeData) {
                     nodeData.updateContent(updates.content);
                     newStore.set(id, nodeData);
-                    
-                    // Propagate data change to connected nodes
-                    setTimeout(() => {
-                        connectionActions.propagateDataChange(id);
-                    }, 0);
                 }
                 return newStore;
             });
@@ -140,12 +146,8 @@ export const nodeActions = {
                         ));
                     }
                     
-                    // Input and static nodes should propagate their updated output
-                    if (nodeData.data.node_type !== 'dynamic') {
-                        setTimeout(() => {
-                            connectionActions.propagateDataChange(nodeId);
-                        }, 0);
-                    }
+                    // Propagation is now handled recursively from the initial trigger,
+                    // so we don't need to re-trigger it here.
                 } catch (error) {
                     console.error(`Error adding input to node ${nodeId}:`, error.message);
                 }
@@ -200,11 +202,6 @@ export const nodeActions = {
                     nodes.update(n => n.map(node => 
                         node.id === id ? { ...node, content: result } : node
                     ));
-                    
-                    // Propagate the new AI output to connected nodes
-                    setTimeout(() => {
-                        connectionActions.propagateDataChange(id);
-                    }, 0);
                 }
             }
             return newStore;
@@ -264,16 +261,8 @@ export const nodeActions = {
 // Helper functions for connection operations
 export const connectionActions = {
     add: (fromId, toId, fromPort, toPort) => {
-        console.log(`Creating connection: ${fromId} -> ${toId}`);
-        
-        // Validate connection based on node types
-        const fromNodeData = nodeActions.getNodeData(fromId);
-        const toNodeData = nodeActions.getNodeData(toId);
-        
-        if (toNodeData && toNodeData.data.node_type === 'static') {
-            throw new Error('Static nodes cannot receive inputs');
-        }
-
+        // This function now ONLY creates the connection structure.
+        // It does NOT trigger data flow.
         const connection = {
             id: crypto.randomUUID(),
             fromId,
@@ -282,83 +271,23 @@ export const connectionActions = {
             toPort,
             created: Date.now()
         };
-
-        console.log('Adding connection to store:', connection);
         connections.update(c => [...c, connection]);
-        
-        // Update YAML data flow
-        if (fromNodeData && toNodeData) {
-            const outputData = fromNodeData.data.output.value;
-            const contextChain = fromNodeData.data.output.context_chain || null;
-            const sources = fromNodeData.data.output.sources || null;
-            nodeActions.addInput(toId, fromId, outputData, 1.0, contextChain, sources);
-        } else {
-            // Handle machine connections
-            const fromMachine = fromId.startsWith('workflow-');
-            const toMachine = toId.startsWith('workflow-');
-            
-            if (fromMachine && toNodeData) {
-                // Machine-to-node connection - defer machine output calculation to avoid circular dependency
-                setTimeout(() => {
-                    import('../stores/workflows.js').then(({ getMachineOutput }) => {
-                        const machineOutput = getMachineOutput(fromId);
-                        if (machineOutput) {
-                            // Machine outputs don't have context chains yet, but pass correct parameters
-                            nodeActions.addInput(toId, fromId, machineOutput, 1.0, null, null);
-                        }
-                    });
-                }, 0);
-            } else if (fromMachine && toMachine) {
-                // Machine-to-machine connection - data transfer will happen during factory execution
-                console.log(`Created machine-to-machine connection: ${fromId} -> ${toId}`);
-                // No immediate data transfer - will be handled by transferMachineOutputs during factory execution
-            }
-        }
-        
         return connection;
     },
     
     delete: (id) => {
-        // Get connection details before deleting
-        let connectionToDelete = null;
+        /** @type {Connection | undefined} */
+        let connectionToDelete;
         const unsubscribe = connections.subscribe(c => {
             connectionToDelete = c.find(conn => conn.id === id);
         });
         unsubscribe();
         
         if (connectionToDelete) {
-            // Remove from YAML data flow
+            // When a connection is deleted, the downstream node must have its input removed.
             nodeActions.removeInput(connectionToDelete.toId, connectionToDelete.fromId);
         }
         
         connections.update(c => c.filter(conn => conn.id !== id));
-    },
-    
-    getConnectionsFor: (nodeId) => {
-        // This is a derived value, but putting it here for convenience
-        let currentConnections = [];
-        const unsubscribe = connections.subscribe(c => currentConnections = c);
-        unsubscribe();
-        
-        return {
-            incoming: currentConnections.filter(c => c.toId === nodeId),
-            outgoing: currentConnections.filter(c => c.fromId === nodeId)
-        };
-    },
-
-    // Propagate data changes through connections
-    propagateDataChange: (sourceNodeId) => {
-        const sourceNodeData = nodeActions.getNodeData(sourceNodeId);
-        if (!sourceNodeData) return;
-
-        const connections_data = connectionActions.getConnectionsFor(sourceNodeId);
-        const outputData = sourceNodeData.data.output.value;
-        const contextChain = sourceNodeData.data.output.context_chain || null;
-        const sources = sourceNodeData.data.output.sources || null;
-
-        // Update all connected nodes with new data
-        connections_data.outgoing.forEach(conn => {
-            nodeActions.addInput(conn.toId, sourceNodeId, outputData, 1.0, contextChain, sources);
-        });
     }
 };

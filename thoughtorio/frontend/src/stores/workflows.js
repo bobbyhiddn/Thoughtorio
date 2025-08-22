@@ -2,6 +2,60 @@ import { writable, derived, get } from 'svelte/store';
 import { nodes, connections, nodeActions, nodeDataStore } from './nodes.js';
 import { settings } from './settings.js';
 
+/**
+ * @typedef {import('../lib/NodeData.js').NodeData} NodeData
+ * @typedef {import('../lib/NodeData.js').NodeOutput} NodeOutput
+ */
+
+/**
+ * @typedef {object} Node
+ * @property {string} id
+ * @property {number} x
+ * @property {number} y
+ * @property {number} width
+ * @property {number} height
+ * @property {string} type
+ * @property {string} content
+ * @property {string} title
+ * @property {string} [purpose]
+ */
+
+/**
+ * @typedef {object} Connection
+ * @property {string} id
+ * @property {string} fromId
+ * @property {string} toId
+ * @property {string} fromSide
+ * @property {string} toSide
+ * @property {boolean} fromMachine
+ */
+
+/**
+ * @typedef {object} WorkflowContainer
+ * @property {string} id
+ * @property {Node[]} nodes
+ * @property {Connection[]} connections
+ * @property {{x: number, y: number, width: number, height: number}} bounds
+ * @property {boolean} isWorkflow
+ * @property {boolean} [isFactory]
+ * @property {'idle' | 'running' | 'completed' | 'error'} executionState
+ * @property {number | null} lastExecuted
+ * @property {WorkflowContainer[]} [machines]
+ */
+
+/**
+ * @typedef {object} FactoryContainer
+ * @property {string} id
+ * @property {WorkflowContainer[]} machines
+ * @property {string[]} nodeIds
+ * @property {Connection[]} connections
+ * @property {{x: number, y: number, width: number, height: number}} bounds
+ * @property {boolean} isFactory
+ * @property {boolean} isWorkflow
+ * @property {'idle' | 'running' | 'completed' | 'error'} executionState
+ * @property {number | null} lastExecuted
+ */
+
 // A derived store that creates a key representing the state of all nodes.
 // This forces the workflowContainers store to update when a node's properties change.
 const nodeStateKey = derived(nodes, ($nodes) => 
@@ -240,7 +294,7 @@ function createFactoryContainer(factoryComponent, machineContainers, connectionL
         },
         isFactory: true,
         isWorkflow: false,
-        executionState: 'idle',
+        executionState: /** @type {'idle'} */ ('idle'),
         lastExecuted: null
     };
 }
@@ -280,7 +334,7 @@ function createWorkflowContainer(nodeGroup, connectionList) {
             height: (maxY - minY) + (2 * padding)
         },
         isWorkflow,
-        executionState: 'idle', // 'idle', 'running', 'completed', 'error'
+        executionState: /** @type {'idle'} */ ('idle'), // 'idle', 'running', 'completed', 'error'
         lastExecuted: null
     };
 }
@@ -306,8 +360,8 @@ export const workflowActions = {
         }));
         
         try {
-            // Get the workflow container synchronously
-            let container = null;
+            /** @type {WorkflowContainer | FactoryContainer | undefined} */
+            let container;
             const unsubscribe = workflowContainers.subscribe(containers => {
                 container = containers.find(c => c.id === workflowId);
             });
@@ -382,51 +436,98 @@ export const workflowActions = {
     }
 };
 
-// Execute a workflow by processing nodes in topological order
+// New Centralized Workflow Executor
 async function executeWorkflow(container) {
-    console.log('Executing workflow container:', container);
-    
-    // Get current settings
+    console.log('🚀 Starting centralized execution for workflow:', container.id);
+    const { nodes: workflowNodes, connections: workflowConnections } = container;
+
+    // 1. Get execution order via topological sort
+    const executionOrder = topologicalSort(workflowNodes, workflowConnections);
+    console.log('📊 Execution Order:', executionOrder);
+
+    // Get settings for AI calls
     const currentSettings = get(settings);
-    
-    console.log('Current settings for workflow execution:', currentSettings);
-    
-    // Check if we have the required AI configuration
     if (!currentSettings.activeMode || !currentSettings.story_processing_model_id) {
         throw new Error('AI provider and model must be configured in settings');
     }
-    
-    // Get API key based on active mode
     let apiKey = '';
     switch (currentSettings.activeMode) {
         case 'openrouter':
         case 'local':
-            apiKey = currentSettings.openrouter_api_key;
-            break;
+            apiKey = currentSettings.openrouter_api_key; break;
         case 'openai':
-            apiKey = currentSettings.openai_api_key;
-            break;
+            apiKey = currentSettings.openai_api_key; break;
         case 'gemini':
-            apiKey = currentSettings.gemini_api_key;
-            break;
+            apiKey = currentSettings.gemini_api_key; break;
     }
-    
     if (currentSettings.activeMode !== 'local' && !apiKey) {
         throw new Error(`API key required for ${currentSettings.activeMode} provider`);
     }
-    
-    // Find all input nodes (nodes with no incoming connections)
-    const inputNodes = container.nodes.filter(node => {
-        const hasIncomingConnection = container.connections.some(conn => conn.toId === node.id);
-        return !hasIncomingConnection && (node.type === 'input' || node.type === 'text');
-    });
-    
-    console.log('Found input nodes:', inputNodes);
-    
-    // Process each input node and follow its connections
-    for (const inputNode of inputNodes) {
-        await processNodeChain(inputNode, container, currentSettings, apiKey);
+
+    // 2. Execute nodes in sequence
+    for (const nodeId of executionOrder) {
+        const node = workflowNodes.find(n => n.id === nodeId);
+        if (!node) continue;
+
+        console.log(`
+--- Executing Node: ${node.title || node.id} ---`);
+        workflowActions.setNodeExecuting(nodeId);
+        nodeActions.setNodeExecuting(nodeId);
+
+        const nodeData = nodeActions.getNodeData(nodeId);
+        if (!nodeData) {
+            console.error(`Could not find NodeData for ${nodeId}`);
+            nodeActions.setNodeError(nodeId, 'NodeData not found');
+            continue;
+        }
+
+        // 3. Build inputs from parent nodes
+        const parentConnections = workflowConnections.filter(c => c.toId === nodeId);
+        for (const conn of parentConnections) {
+            const parentNodeData = nodeActions.getNodeData(conn.fromId);
+            if (parentNodeData && parentNodeData.data.output) {
+                console.log(`   - Receiving input from: ${conn.fromId}`);
+                const { value, context_chain, sources } = parentNodeData.data.output;
+                nodeActions.addInput(nodeId, conn.fromId, value, 1.0, context_chain, sources);
+            }
+        }
+
+        // 4. Execute node logic (if dynamic)
+        if (node.type === 'dynamic') {
+            const inputText = nodeData.getProcessedInput();
+            if (inputText && inputText.trim()) {
+                try {
+                    console.log(`   - Calling AI for: ${node.id}`);
+                    const response = await window.go.main.App.GetAICompletion(
+                        currentSettings.activeMode,
+                        currentSettings.story_processing_model_id,
+                        inputText,
+                        apiKey
+                    );
+
+                    if (response && response.Content) {
+                        nodeActions.setNodeCompleted(nodeId, response.Content);
+                    } else {
+                        const errorMsg = `AI Error: ${response.Error || 'No content returned'}`;
+                        nodeActions.setNodeError(nodeId, new Error(errorMsg));
+                    }
+                } catch (error) {
+                    console.error('AI processing failed:', error);
+                    nodeActions.setNodeError(nodeId, error);
+                }
+            } else {
+                console.log(`   - Skipping AI call for ${node.id} (no input).`);
+                nodeActions.setNodeCompleted(nodeId, nodeData.data.content);
+            }
+        } else {
+            // For static/input nodes, completion is implicit
+            nodeActions.setNodeCompleted(nodeId, nodeData.data.content);
+        }
+
+        workflowActions.setNodeCompleted(nodeId);
+        console.log(`--- Finished Node: ${node.title || node.id} ---`);
     }
+    console.log('✅ Workflow execution completed:', container.id);
 }
 
 // Execute a factory by processing machines in dependency order
@@ -528,207 +629,58 @@ async function executeFactory(factory) {
     console.log('Factory execution completed. Execution order was:', executionQueue);
 }
 
-// Process a chain of nodes starting from an input node with contextual envelope
-async function processNodeChain(startNode, container, settings, apiKey) {
-    console.log('Processing node chain from:', startNode);
-    
-    const visited = new Set();
-    const contextEnvelope = createContextEnvelope();
-    
-    // Add initial context from the start node
-    if (startNode.content) {
-        contextEnvelope.addStep(startNode.id, startNode.type, startNode.content, 'user_input');
-    }
-    
-    await processNodeWithContext(startNode, container, settings, apiKey, contextEnvelope, visited);
-}
+// Helper for topological sort
+function topologicalSort(nodes, connections) {
+    const graph = new Map(nodes.map(n => [n.id, []]));
+    const inDegree = new Map(nodes.map(n => [n.id, 0]));
 
-// Process a single node with accumulated context
-async function processNodeWithContext(currentNode, container, settings, apiKey, contextEnvelope, visited) {
-    if (visited.has(currentNode.id)) {
-        return;
-    }
-    visited.add(currentNode.id);
-    
-    console.log('Processing node with context:', currentNode.id, 'Context steps:', contextEnvelope.steps.length);
-    
-    // Get YAML backend data, create if missing
-    let nodeData = nodeActions.getNodeData(currentNode.id);
-    if (!nodeData) {
-        console.warn('No YAML data found for node, creating:', currentNode.id);
-        // Import NodeData to create missing YAML data
-        const { NodeData } = await import('../lib/NodeData.js');
-        
-        // Create appropriate NodeData based on node type
-        switch (currentNode.type) {
-            case 'static':
-                nodeData = NodeData.createStatic(currentNode.id, currentNode.content || '', currentNode.title || 'Static Node');
-                break;
-            case 'input':
-                nodeData = NodeData.createInput(currentNode.id, currentNode.content || '', currentNode.title || 'Input Node');
-                break;
-            case 'dynamic':
-                nodeData = NodeData.createDynamic(currentNode.id, currentNode.title || 'AI Output');
-                break;
-            default:
-                console.error('Unknown node type for YAML creation:', currentNode.type);
-                return;
+    connections.forEach(conn => {
+        if (graph.has(conn.fromId) && graph.has(conn.toId)) {
+            graph.get(conn.fromId).push(conn.toId);
+            inDegree.set(conn.toId, (inDegree.get(conn.toId) || 0) + 1);
         }
-        
-        // Save the created YAML data
-        import('../stores/nodes.js').then(({ nodeDataStore }) => {
-            nodeDataStore.update(store => {
-                const newStore = new Map(store);
-                newStore.set(currentNode.id, nodeData);
-                return newStore;
-            });
-        });
-    }
-    
-    // Mark node as executing
-    workflowActions.setNodeExecuting(currentNode.id);
-    nodeActions.setNodeExecuting(currentNode.id);
-    
-    // If this is an AI node, process it with YAML context
-    if (currentNode.type === 'dynamic') {
-        await processAINodeWithYAMLContext(currentNode, nodeData, container, settings, apiKey);
-    }
-    
-    // Mark node as completed
-    workflowActions.setNodeCompleted(currentNode.id);
-    nodeActions.setNodeCompleted(currentNode.id);
-    
-    // Find all nodes connected from this one and process them recursively
-    const outgoingConnections = container.connections.filter(conn => conn.fromId === currentNode.id);
-    for (const connection of outgoingConnections) {
-        const nextNode = container.nodes.find(node => node.id === connection.toId);
-        if (nextNode && !visited.has(nextNode.id)) {
-            // Create a new context branch for this path
-            const branchedContext = contextEnvelope.branch();
-            
-            // Add current node's output to context if it has content
-            if (currentNode.content) {
-                branchedContext.addStep(currentNode.id, currentNode.type, currentNode.content, 
-                    currentNode.type === 'dynamic' ? 'ai_output' : 'user_input');
-            }
-            
-            // Process the next node with the updated context
-            await processNodeWithContext(nextNode, container, settings, apiKey, branchedContext, visited);
-        }
-    }
-}
+    });
 
-// Create a context envelope to track workflow history
-function createContextEnvelope() {
-    return {
-        steps: [],
-        metadata: {
-            workflowId: crypto.randomUUID(),
-            startTime: Date.now(),
-            version: '1.0'
-        },
-        
-        addStep(nodeId, nodeType, content, role) {
-            this.steps.push({
-                nodeId,
-                nodeType,
-                content: content.trim(),
-                role, // 'user_input', 'ai_output', 'system'
-                timestamp: Date.now(),
-                stepIndex: this.steps.length
-            });
-        },
-        
-        getFullContext() {
-            return this.steps.map(step => `[${step.role.toUpperCase()}]: ${step.content}`).join('\n\n');
-        },
-        
-        getContextForAI() {
-            // Create a clean, natural conversation history
-            const contextParts = [];
-            
-            this.steps.forEach((step, index) => {
-                if (step.role === 'user_input') {
-                    contextParts.push(`Human: ${step.content}`);
-                } else if (step.role === 'ai_output') {
-                    contextParts.push(`Assistant: ${step.content}`);
+    const queue = nodes.filter(n => inDegree.get(n.id) === 0).map(n => n.id);
+    const sortedOrder = [];
+
+    while (queue.length > 0) {
+        const u = queue.shift();
+        sortedOrder.push(u);
+
+        if (graph.has(u)) {
+            for (const v of graph.get(u)) {
+                inDegree.set(v, inDegree.get(v) - 1);
+                if (inDegree.get(v) === 0) {
+                    queue.push(v);
                 }
-            });
-            
-            // Just return the natural conversation format
-            return contextParts.join('\n\n');
-        },
-        
-        branch() {
-            // Create a copy of this context for parallel processing paths
-            return {
-                ...this,
-                steps: [...this.steps],
-                metadata: { ...this.metadata }
-            };
-        },
-        
-        getLastUserInput() {
-            const userInputs = this.steps.filter(step => step.role === 'user_input');
-            return userInputs.length > 0 ? userInputs[userInputs.length - 1].content : '';
+            }
         }
-    };
+    }
+
+    if (sortedOrder.length !== nodes.length) {
+        const unprocessed = nodes.filter(n => !sortedOrder.includes(n.id)).map(n => n.id);
+        console.error(`Cycle detected in workflow graph! Unprocessed nodes: ${unprocessed.join(', ')}`);
+        // Return partial sort to allow non-cyclic parts to run
+        return sortedOrder; 
+    }
+
+    return sortedOrder;
 }
 
-// Process an AI node with YAML context data
-async function processAINodeWithYAMLContext(aiNode, nodeData, container, settings, apiKey) {
-    console.log('Processing AI node with YAML context:', aiNode.id);
-    console.log('Node YAML data:', nodeData.toYAML());
-    
-    // Get processed input from YAML backend
-    const inputText = nodeData.getProcessedInput();
-    
-    if (!inputText.trim()) {
-        console.log('No input text found for AI node:', aiNode.id);
-        return;
-    }
-    
-    console.log('Input text for AI processing:', inputText);
-    
-    try {
-        // Check if Wails runtime is available
-        if (!window.go || !window.go.main || !window.go.main.App) {
-            console.warn('Wails runtime not available - simulating AI completion');
-            const simulatedResponse = `AI processed YAML context: "${inputText.substring(0, 100)}..." - This is a simulated response with YAML backend.`;
-            
-            // Update the AI node with the result
-            nodeActions.setNodeCompleted(aiNode.id, simulatedResponse);
-            return;
-        }
-        
-        // Call the AI completion function with YAML context
-        const response = await window.go.main.App.GetAICompletion(
-            settings.activeMode,
-            settings.story_processing_model_id,
-            inputText,
-            apiKey
-        );
-        
-        console.log('AI completion response:', response);
-        
-        if (response && response.Content) {
-            nodeActions.setNodeCompleted(aiNode.id, response.Content);
-        } else if (response && response.Error) {
-            const errorMsg = `Error: ${response.Error}`;
-            nodeActions.setNodeError(aiNode.id, new Error(errorMsg));
-        }
-    } catch (error) {
-        console.error('AI processing failed:', error);
-        nodeActions.setNodeError(aiNode.id, error);
-    }
-}
-
-// Get machine output data (from outmost nodes)
+/**
+ * Get machine output data (from outmost nodes)
+ * @param {string} machineId 
+ * @returns {NodeOutput | null}
+ */
 export function getMachineOutput(machineId) {
-    // Get machine container from workflow containers
-    let machine = null;
+    /** @type {WorkflowContainer | undefined} */
+    let machine;
     const unsubscribe = workflowContainers.subscribe(containers => {
-        machine = containers.find(c => c.id === machineId);
+        const container = containers.find(c => c.id === machineId);
+        if (container && container.isWorkflow) {
+            machine = /** @type {WorkflowContainer} */ (container);
+        }
     });
     unsubscribe();
 
@@ -736,42 +688,85 @@ export function getMachineOutput(machineId) {
 
     // Find output nodes (nodes with no outgoing connections within the machine)
     const machineNodeIds = new Set(machine.nodes.map(n => n.id));
-    const internalConnections = machine.connections;
-    
-    const outputNodes = machine.nodes.filter(node => {
-        const hasOutgoingInternalConnection = internalConnections.some(conn => 
-            conn.fromId === node.id && machineNodeIds.has(conn.toId)
-        );
-        return !hasOutgoingInternalConnection;
+    const outputNodes = machine.nodes.filter(node => 
+        !machine.connections.some(conn => conn.fromId === node.id && machineNodeIds.has(conn.toId))
+    );
+
+    if (outputNodes.length === 0) return null;
+
+    // Merge outputs from all output nodes into a single structured payload
+    const mergedOutput = {
+        type: /** @type {const} */ ('structured_context'),
+        value: { facts: [], history: [], task: '' },
+        sources: new Set(),
+        context_chain: []
+    };
+    const seenContextItems = new Set();
+    const seenFacts = new Set();
+
+    outputNodes.forEach(node => {
+        const nodeData = nodeActions.getNodeData(node.id);
+        if (!nodeData || !nodeData.data.output || typeof nodeData.data.output.value !== 'object') return;
+
+        const { value, sources, context_chain } = nodeData.data.output;
+
+        // Merge facts, avoiding duplicates
+        value.facts.forEach(fact => {
+            if (!seenFacts.has(fact)) {
+                mergedOutput.value.facts.push(fact);
+                seenFacts.add(fact);
+            }
+        });
+
+        // Merge history
+        mergedOutput.value.history.push(...value.history);
+
+        // The last task from any output node wins
+        if (value.task) {
+            mergedOutput.value.task = value.task;
+        }
+
+        // Merge sources
+        sources.forEach(sourceId => mergedOutput.sources.add(sourceId));
+
+        // Merge context_chain, avoiding duplicates
+        if (context_chain) {
+            context_chain.forEach(item => {
+                if (!seenContextItems.has(item.node_id)) {
+                    mergedOutput.context_chain.push(item);
+                    seenContextItems.add(item.node_id);
+                }
+            });
+        }
     });
 
-    // Combine output from all output nodes
-    const outputs = outputNodes.map(node => {
-        const nodeData = nodeActions.getNodeData(node.id);
-        return nodeData ? nodeData.data.output.value : node.content || '';
-    }).filter(Boolean);
+    const finalOutput = { ...mergedOutput, sources: Array.from(mergedOutput.sources) };
 
-    return outputs.length > 0 ? outputs.join('\n\n---\n\n') : '';
+    // Sort history by timestamp if available
+    mergedOutput.value.history.sort((a, b) => {
+        const timestampA = mergedOutput.context_chain.find(item => item.contribution.content === a)?.timestamp;
+        const timestampB = mergedOutput.context_chain.find(item => item.contribution.content === b)?.timestamp;
+        if (timestampA && timestampB && !isNaN(new Date(timestampA).getTime()) && !isNaN(new Date(timestampB).getTime())) {
+            return new Date(timestampA).getTime() - new Date(timestampB).getTime();
+        }
+        return 0;
+    });
+
+    return finalOutput;
 }
 
 // Transfer machine outputs to connected entities (machines or nodes)
 async function transferMachineOutputs(sourceMachineId, factory) {
     console.log('🔄 Transferring outputs from machine:', sourceMachineId);
     
-    // Get the machine output
     const machineOutput = getMachineOutput(sourceMachineId);
     if (!machineOutput) {
         console.log('❌ No output found for machine:', sourceMachineId);
         return;
     }
     
-    console.log('📤 Machine output to transfer:', {
-        output: machineOutput,
-        outputType: typeof machineOutput,
-        outputLength: machineOutput?.length || 0
-    });
+    console.log('📤 Machine output to transfer:', machineOutput);
     
-    // Get all connections where this machine is the source
     const { connections: allConnections } = await import('./nodes.js');
     let currentConnections = [];
     const unsubscribe = allConnections.subscribe(c => currentConnections = c);
@@ -784,27 +779,39 @@ async function transferMachineOutputs(sourceMachineId, factory) {
         const targetId = connection.toId;
         
         if (targetId.startsWith('workflow-')) {
-            // Machine-to-machine connection - transfer to target machine's input nodes
             await transferToMachineInputs(targetId, sourceMachineId, machineOutput);
         } else {
-            // Machine-to-node connection - transfer directly to the node
             const { nodeActions } = await import('./nodes.js');
             console.log(`Transferring to node ${targetId}:`, machineOutput);
-            // Machine outputs don't have context chains yet, but pass correct parameters
-            nodeActions.addInput(targetId, sourceMachineId, machineOutput, 1.0, null, null);
+            nodeActions.addInput(
+                targetId, 
+                sourceMachineId, 
+                machineOutput.value, 
+                1.0, 
+                machineOutput.context_chain,
+                machineOutput.sources
+            );
         }
     }
 }
 
-// Transfer data to input nodes of a target machine
+/**
+ * Transfer data to input nodes of a target machine
+ * @param {string} targetMachineId
+ * @param {string} sourceMachineId
+ * @param {NodeOutput} outputData
+ */
 async function transferToMachineInputs(targetMachineId, sourceMachineId, outputData) {
     console.log(`🔄 Transferring data from machine ${sourceMachineId} to machine ${targetMachineId}`);
-    console.log('📥 Data to transfer:', { data: outputData, type: typeof outputData });
+    console.log('📥 Data to transfer:', outputData);
     
-    // Get the target machine
-    let targetMachine = null;
+    /** @type {WorkflowContainer | undefined} */
+    let targetMachine;
     const unsubscribe = workflowContainers.subscribe(containers => {
-        targetMachine = containers.find(c => c.id === targetMachineId);
+        const container = containers.find(c => c.id === targetMachineId);
+        if (container && container.isWorkflow) {
+            targetMachine = /** @type {WorkflowContainer} */ (container);
+        }
     });
     unsubscribe();
     
@@ -819,12 +826,9 @@ async function transferToMachineInputs(targetMachineId, sourceMachineId, outputD
         connectionCount: targetMachine.connections?.length || 0
     });
     
-    // Find input nodes in the target machine (nodes with no incoming connections within the machine)
     const machineNodeIds = new Set(targetMachine.nodes.map(n => n.id));
-    const internalConnections = targetMachine.connections;
-    
     const inputNodes = targetMachine.nodes.filter(node => {
-        const hasIncomingInternalConnection = internalConnections.some(conn => 
+        const hasIncomingInternalConnection = targetMachine.connections.some(conn => 
             conn.toId === node.id && machineNodeIds.has(conn.fromId)
         );
         return !hasIncomingInternalConnection && (node.type === 'input' || node.type === 'static');
@@ -832,12 +836,17 @@ async function transferToMachineInputs(targetMachineId, sourceMachineId, outputD
     
     console.log(`Found ${inputNodes.length} input nodes in target machine:`, inputNodes.map(n => n.id));
     
-    // Transfer data to all input nodes
     const { nodeActions } = await import('./nodes.js');
     for (const inputNode of inputNodes) {
         console.log(`Adding input to node ${inputNode.id}:`, outputData);
-        // Machine outputs don't have context chains yet, but pass correct parameters
-        nodeActions.addInput(inputNode.id, sourceMachineId, outputData, 1.0, null, null);
+        nodeActions.addInput(
+            inputNode.id, 
+            sourceMachineId, 
+            outputData.value, 
+            1.0, 
+            outputData.context_chain, 
+            outputData.sources
+        );
     }
 }
 

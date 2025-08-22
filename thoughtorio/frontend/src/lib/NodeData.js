@@ -5,6 +5,36 @@
 
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
 
+/**
+ * @typedef {object} StructuredContext
+ * @property {string[]} facts - A list of factual statements.
+ * @property {Array<{role: 'user' | 'assistant', content: string}>} history - The conversation history.
+ * @property {string} task - The specific task for an AI node.
+ */
+
+/**
+ * @typedef {object} ContextContribution
+ * @property {'fact' | 'task' | 'history'} type - The type of contribution.
+ * @property {string | {role: 'assistant', content: string}} content - The content of the contribution.
+ */
+
+/**
+ * @typedef {object} ContextChainItem
+ * @property {string} node_id - The ID of the contributing node.
+ * @property {string} type - The node type.
+ * @property {ContextContribution} contribution - The structured contribution.
+ * @property {string} processing - The processing type.
+ * @property {string} timestamp - The ISO timestamp of the contribution.
+ */
+
+/**
+ * @typedef {object} NodeOutput
+ * @property {'text' | 'structured_context'} type - The type of the output.
+ * @property {string | StructuredContext} value - The output value.
+ * @property {string[]} sources - The IDs of the source nodes.
+ * @property {ContextChainItem[]} [context_chain] - The historical ledger of contributions.
+ */
+
 export class NodeData {
     constructor(nodeType, id, content = '', title = '') {
         this.data = {
@@ -18,6 +48,7 @@ export class NodeData {
             },
             inputs: [],
             processing: {},
+            /** @type {NodeOutput} */
             output: {
                 type: 'text',
                 value: content,
@@ -47,6 +78,7 @@ export class NodeData {
 
     static createInput(id, content, title) {
         const nodeData = new NodeData('input', id, content, title);
+        nodeData.data.purpose = 'fact'; // Default purpose, can be 'task'
         nodeData.data.processing = {
             envelope_style: 'prompt_wrapper',
             wrapper_template: '{inputs}\n{content}'
@@ -59,7 +91,7 @@ export class NodeData {
         nodeData.data.processing = {
             type: 'ai_completion',
             model: '',
-            system_prompt: 'You are a component in a workflow. The user is building a machine or factory. Interpret prompts in this context. The term \'machine\' refers to the workflow you are part of.',
+            system_prompt: 'You are a component in a workflow. The user is building a machine or factory. Interpret prompts in this context. The term \'machine\' refers to the workflow you are part of. Respond in a way that is direct and answers the machine or factory\'s goal.',
             parameters: {
                 temperature: 0.7,
                 max_tokens: 1000
@@ -129,112 +161,99 @@ export class NodeData {
         return this;
     }
 
-    // Output generation based on node type
+    // REBUILT FROM SCRATCH: This consumes the chain to build the live payload.
     _updateOutput() {
-        switch (this.data.node_type) {
-            case 'static':
-                // Static nodes output their content as-is
-                this.data.output = {
-                    type: 'text',
-                    value: this.data.content,
-                    sources: [this.data.id]
-                };
-                break;
+        // 1. Build the authoritative historical chain.
+        const contextChain = this._buildContextChain();
 
-            case 'input':
-                // Input nodes envelope their inputs with their content
-                const inputsText = this.data.inputs.map(input => input.data).join('\n');
-                const template = this.data.processing.wrapper_template || '{inputs}\n{content}';
-                
-                // Build sources from inputs
-                const inputSources = new Set([this.data.id]);
-                this.data.inputs.forEach(input => {
-                    if (input.sources) {
-                        input.sources.forEach(source => inputSources.add(source));
-                    } else {
-                        inputSources.add(input.source_id);
+        // 2. Process the chain to create the structured payload.
+        const structuredValue = { facts: [], history: [], task: '' };
+        const seenFacts = new Set();
+
+        contextChain.forEach(item => {
+            const contrib = item.contribution;
+            if (!contrib) return;
+
+            switch (contrib.type) {
+                case 'fact':
+                    if (contrib.content && !seenFacts.has(contrib.content)) {
+                        structuredValue.facts.push(contrib.content);
+                        seenFacts.add(contrib.content);
                     }
-                });
-                
-                this.data.output = {
-                    type: 'text',
-                    value: template
-                        .replace('{inputs}', inputsText)
-                        .replace('{content}', this.data.content),
-                    sources: Array.from(inputSources),
-                    context_chain: this._buildContextChain()
-                };
+                    break;
+                case 'task':
+                // The last task in the chain wins.
+                if (typeof contrib.content === 'string') {
+                    structuredValue.task = contrib.content;
+                }
                 break;
-
-            case 'dynamic':
-                // AI nodes maintain their processed content and context chain
-                const allSources = new Set([this.data.id]);
-                this.data.inputs.forEach(input => {
-                    if (input.sources) {
-                        input.sources.forEach(source => allSources.add(source));
-                    } else {
-                        allSources.add(input.source_id);
-                    }
-                });
-
-                this.data.output = {
-                    type: 'text',
-                    value: this.data.output.value || this.data.content,
-                    sources: Array.from(allSources),
-                    context_chain: this._buildContextChain()
-                };
-                break;
-        }
+                case 'history':
+                    structuredValue.history.push(contrib.content);
+                    break;
+            }
+        });
+        
+        // 3. Set the final output values.
+        this.data.output = {
+            type: 'structured_context',
+            value: structuredValue, // The live payload
+            sources: this._collectSources(contextChain),
+            context_chain: contextChain // The historical ledger
+        };
     }
 
+    // REBUILT FROM SCRATCH: This is now the source of truth for lineage.
     _buildContextChain() {
         const newChain = [];
         const seenNodeIds = new Set();
 
-        // Collect all unique context items from inputs' chains
+        // 1. Inherit the chain from all inputs recursively.
+        // This builds the complete history of how we got here.
         this.data.inputs.forEach(input => {
-            if (input.context_chain && Array.isArray(input.context_chain) && input.context_chain.length > 0) {
+            if (input.context_chain && Array.isArray(input.context_chain)) {
                 input.context_chain.forEach(item => {
                     if (!seenNodeIds.has(item.node_id)) {
                         newChain.push(item);
                         seenNodeIds.add(item.node_id);
                     }
                 });
-            } else {
-                // If an input has no context chain, it's a root contributor.
-                // Add its own data as a contribution.
-                if (!seenNodeIds.has(input.source_id)) {
-                    newChain.push({
-                        node_id: input.source_id,
-                        type: 'input', // Assume 'input' or another base type
-                        contribution: input.data,
-                        processing: 'unknown',
-                        timestamp: input.received_at
-                    });
-                    seenNodeIds.add(input.source_id);
-                }
             }
         });
 
-        // Add the current node's own content as its contribution to the chain
-        if (this.data.content && !seenNodeIds.has(this.data.id)) {
-            let contribution = this.data.content;
-
-            // For AI nodes, summarize the contribution to keep the chain clean
-            if (this.data.node_type === 'dynamic') {
-                const lines = contribution.split('\n').filter(line => line.trim());
-                const firstLine = lines[0] || '';
-                contribution = firstLine.length > 75 ? firstLine.substring(0, 72) + '...' : firstLine;
+        // 2. Add this node's own, new contribution to the chain.
+        if (this.data.content || this.data.node_type === 'dynamic') {
+            /** @type {ContextContribution | undefined} */
+            let contribution;
+            switch (this.data.node_type) {
+                case 'input':
+                case 'static':
+                    contribution = {
+                        type: this.data.purpose === 'task' ? 'task' : 'fact',
+                        content: this.data.content
+                    };
+                    break;
+                case 'dynamic':
+                    // A dynamic node contributes its result to the conversation history.
+                    contribution = {
+                        type: 'history',
+                        content: {
+                            role: 'assistant',
+                            content: this.data.execution.result_string || ''
+                        }
+                    };
+                    break;
             }
 
-            newChain.push({
-                node_id: this.data.id,
-                type: this.data.node_type,
-                contribution: contribution,
-                processing: this.data.processing.type || 'unknown',
-                timestamp: new Date().toISOString()
-            });
-            seenNodeIds.add(this.data.id);
+            if (contribution && contribution.content && !seenNodeIds.has(this.data.id)) {
+                 newChain.push({
+                    node_id: this.data.id,
+                    type: this.data.node_type,
+                    contribution: contribution, // The contribution is now a structured object
+                    processing: this.data.processing.type || 'unknown',
+                    timestamp: new Date().toISOString()
+                });
+                seenNodeIds.add(this.data.id);
+            }
         }
 
         return newChain;
@@ -254,10 +273,9 @@ export class NodeData {
         this.data.execution.completed_at = new Date().toISOString();
         
         if (result !== null && this.data.node_type === 'dynamic') {
-            this.data.output.value = result;
-            // After updating the output value, we need to rebuild the context chain
-            // and sources to include this node's new contribution.
-            this._updateOutput();
+            // Store the raw string result. _updateOutput will structure it.
+            this.data.execution.result_string = result;
+            this._updateOutput(); // Trigger a re-evaluation
         }
         
         return this;
@@ -346,49 +364,48 @@ export class NodeData {
         }
     }
 
-    // Get processed input for AI nodes
+    // The Prompt Assembler now has a cleaner input.
     getProcessedInput() {
-        if (this.data.inputs.length === 0) {
-            return this.data.content;
+        if (this.data.node_type !== 'dynamic' || !this.data.output.value || typeof this.data.output.value !== 'object') {
+            return ''; // Should not happen for dynamic nodes with structured output
         }
 
-        switch (this.data.node_type) {
-            case 'input':
-                return this.data.content;
-            
-            case 'dynamic':
-                // The complete context for the AI is already prepared and stored in the `data`
-                // field of its inputs by upstream nodes. We just need to combine them.
-                const fullInputText = this.data.inputs
-                    .map(input => input.data)
-                    .filter(Boolean) // Filter out any empty/null inputs
-                    .join('\n\n');   // Join multiple inputs with a double newline
-
-                // The node's own content is now the instruction/prompt for the AI.
-                const instruction = this.data.content;
-
-                // Combine instruction and the full context from inputs.
-                let combinedInput = fullInputText;
-                if (instruction && instruction.trim()) {
-                    // If there's an instruction, prepend it to the context.
-                    combinedInput = `${instruction}\n\n${fullInputText}`.trim();
-                }
-
-                if (!combinedInput) {
-                    return ''; // Return empty if there's no actual input text or instruction
-                }
-
-                // Prepend system prompt if it exists
-                let prompt = combinedInput;
-                if (this.data.processing.system_prompt) {
-                    prompt = `${this.data.processing.system_prompt}\n\n---\n\n${combinedInput}`;
-                }
-
-                return prompt;
-            
-            default:
-                return this.data.content;
+        /** @type {StructuredContext} */
+        const context = this.data.output.value;
+        let promptParts = [];
+        
+        // 1. System Prompt (No change)
+        if (this.data.processing.system_prompt) {
+            promptParts.push(this.data.processing.system_prompt);
         }
+
+        // 2. Add Contextual Facts
+        if (context.facts && context.facts.length > 0) {
+            promptParts.push("\n--- CONTEXTUAL INFORMATION ---");
+            context.facts.forEach(fact => promptParts.push(`- ${fact}`));
+        }
+
+        // 3. Add Conversation History
+        if (context.history && context.history.length > 0) {
+            promptParts.push("\n--- CONVERSATION HISTORY ---");
+            context.history.forEach(turn => {
+                const role = turn.role === 'assistant' ? 'AI' : 'User';
+                promptParts.push(`${role}: ${turn.content}`);
+            });
+        }
+
+        // 4. Add the Specific Task
+        if (context.task) {
+            promptParts.push(`\n--- YOUR TASK ---`);
+            promptParts.push(context.task);
+        } else {
+            promptParts.push(`\n--- YOUR TASK ---`);
+            promptParts.push("Review the information provided and provide a comprehensive response or continue the conversation naturally.");
+        }
+        
+        const finalPrompt = promptParts.join('\n');
+        console.log("Assembled Prompt for AI:", finalPrompt);
+        return finalPrompt;
     }
 
     // Validation
@@ -421,6 +438,18 @@ export class NodeData {
         }
 
         return errors;
+    }
+
+    _collectSources(contextChain) {
+        const sources = new Set();
+        contextChain.forEach(item => {
+            sources.add(item.node_id);
+            // Also add original sources if they exist from a previous chain
+            if (item.sources && Array.isArray(item.sources)) {
+                item.sources.forEach(s => sources.add(s));
+            }
+        });
+        return Array.from(sources);
     }
 
     // Deep clone
