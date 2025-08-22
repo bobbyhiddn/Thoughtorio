@@ -1,5 +1,6 @@
-import { writable, derived, get } from 'svelte/store';
-import { nodes, connections, nodeActions, nodeDataStore } from './nodes.js';
+import { writable, get, derived } from 'svelte/store';
+import { nodeActions, nodeDataStore, nodes, connections } from './nodes.js';
+import { ContextEngine } from '../lib/ContextEngine.js';
 import { settings } from './settings.js';
 
 /**
@@ -517,11 +518,17 @@ async function executeWorkflow(container) {
                     );
 
                     console.log(`   - AI Response:`, response);
+                    console.log(`   - About to call setNodeCompleted for ${nodeId}`);
 
                     if (response && response.Content) {
+                        console.log(`   - Setting node ${nodeId} as completed with content:`, response.Content);
                         nodeActions.setNodeCompleted(nodeId, response.Content);
+                        console.log(`   - Setting workflow node ${nodeId} as completed`);
+                        workflowActions.setNodeCompleted(nodeId);
+                        console.log(`   - Both completion calls finished for ${nodeId}`);
                     } else {
                         const errorMsg = `AI Error: ${response.Error || 'No content returned'}`;
+                        console.log(`   - Setting node ${nodeId} as error:`, errorMsg);
                         nodeActions.setNodeError(nodeId, new Error(errorMsg));
                     }
                 } catch (error) {
@@ -531,13 +538,14 @@ async function executeWorkflow(container) {
             } else {
                 console.log(`   - Skipping AI call for ${node.id} (no input).`);
                 nodeActions.setNodeCompleted(nodeId, nodeData.data.content);
+                workflowActions.setNodeCompleted(nodeId);
             }
         } else {
             // For static/input nodes, completion is implicit
             nodeActions.setNodeCompleted(nodeId, nodeData.data.content);
+            workflowActions.setNodeCompleted(nodeId);
         }
 
-        workflowActions.setNodeCompleted(nodeId);
         console.log(`--- Finished Node: ${node.title || node.id} ---`);
     }
     console.log('✅ Workflow execution completed:', container.id);
@@ -690,82 +698,61 @@ export function getMachineOutput(machineId) {
     /** @type {WorkflowContainer | undefined} */
     let machine;
     const unsubscribe = workflowContainers.subscribe(containers => {
-        const container = containers.find(c => c.id === machineId);
-        if (container && container.isWorkflow) {
-            machine = /** @type {WorkflowContainer} */ (container);
-        }
+        machine = containers.find(c => c.id === machineId);
     });
     unsubscribe();
-
-    if (!machine) return null;
-
-    // Find output nodes (nodes with no outgoing connections within the machine)
-    const machineNodeIds = new Set(machine.nodes.map(n => n.id));
-    const outputNodes = machine.nodes.filter(node => 
-        !machine.connections.some(conn => conn.fromId === node.id && machineNodeIds.has(conn.toId))
-    );
-
+    
+    if (!machine || !machine.nodes) return null;
+    
+    // Find nodes that have no outgoing connections (output nodes)
+    const outputNodes = machine.nodes.filter(node => {
+        return !machine.connections.some(conn => conn.fromId === node.id);
+    });
+    
     if (outputNodes.length === 0) return null;
 
-    // Merge outputs from all output nodes into a single structured payload
-    const mergedOutput = {
-        type: /** @type {const} */ ('structured_context'),
-        value: { facts: [], history: [], task: '' },
-        sources: new Set(),
-        context_chain: []
+    // Use ContextEngine to merge outputs from all output nodes
+    return ContextEngine.mergeWorkflowOutputs(outputNodes, nodeActions.getNodeData);
+}
+
+/**
+ * Get factory output data (aggregated from all machines)
+ * @param {string} factoryId 
+ * @returns {NodeOutput | null}
+ */
+export function getFactoryOutput(factoryId) {
+    /** @type {FactoryContainer | undefined} */
+    let factory;
+    const unsubscribe = workflowContainers.subscribe(containers => {
+        factory = containers.find(c => c.id === factoryId && c.isFactory);
+    });
+    unsubscribe();
+    
+    if (!factory || !factory.machines) return null;
+    
+    // Get outputs from all machines in the factory
+    const machineOutputs = factory.machines
+        .map(machine => getMachineOutput(machine.id))
+        .filter(output => output !== null);
+    
+    if (machineOutputs.length === 0) return null;
+    
+    // Aggregate all machine outputs
+    if (machineOutputs.length === 1) {
+        return machineOutputs[0];
+    }
+    
+    // Merge multiple machine outputs
+    const aggregatedValue = machineOutputs.map(output => output.value).join('\n\n---\n\n');
+    const aggregatedSources = [...new Set(machineOutputs.flatMap(output => output.sources || []))];
+    const aggregatedContextChain = machineOutputs.flatMap(output => output.context_chain || []);
+    
+    return {
+        type: 'text',
+        value: aggregatedValue,
+        sources: aggregatedSources,
+        context_chain: aggregatedContextChain
     };
-    const seenContextItems = new Set();
-    const seenFacts = new Set();
-
-    outputNodes.forEach(node => {
-        const nodeData = nodeActions.getNodeData(node.id);
-        if (!nodeData || !nodeData.data.output || typeof nodeData.data.output.value !== 'object') return;
-
-        const { value, sources, context_chain } = nodeData.data.output;
-
-        // Merge facts, avoiding duplicates
-        value.facts.forEach(fact => {
-            if (!seenFacts.has(fact)) {
-                mergedOutput.value.facts.push(fact);
-                seenFacts.add(fact);
-            }
-        });
-
-        // Merge history
-        mergedOutput.value.history.push(...value.history);
-
-        // The last task from any output node wins
-        if (value.task) {
-            mergedOutput.value.task = value.task;
-        }
-
-        // Merge sources
-        sources.forEach(sourceId => mergedOutput.sources.add(sourceId));
-
-        // Merge context_chain, avoiding duplicates
-        if (context_chain) {
-            context_chain.forEach(item => {
-                if (!seenContextItems.has(item.node_id)) {
-                    mergedOutput.context_chain.push(item);
-                    seenContextItems.add(item.node_id);
-                }
-            });
-        }
-    });
-
-    const finalOutput = { ...mergedOutput, sources: Array.from(mergedOutput.sources) };
-
-    // Sort history by timestamp if available
-    mergedOutput.value.history.sort((a, b) => {
-        const timestampA = mergedOutput.context_chain.find(item => item.contribution.content === a)?.timestamp;
-        const timestampB = mergedOutput.context_chain.find(item => item.contribution.content === b)?.timestamp;
-        if (timestampA && timestampB && !isNaN(new Date(timestampA).getTime()) && !isNaN(new Date(timestampB).getTime())) {
-            return new Date(timestampA).getTime() - new Date(timestampB).getTime();
-        }
-        return 0;
-    });
-
-    return finalOutput;
 }
 
 // Transfer machine outputs to connected entities (machines or nodes)

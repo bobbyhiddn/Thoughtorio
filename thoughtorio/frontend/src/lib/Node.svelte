@@ -650,7 +650,8 @@
     .execution-indicator {
         display: flex;
         align-items: center;
-        margin-right: 8px;
+        position: absolute;
+        right: 30px;
     }
     
     .spinner {
@@ -671,6 +672,7 @@
         color: #4caf50;
         font-weight: bold;
         font-size: 16px;
-        margin-right: 8px;
+        position: absolute;
+        right: 30px;
     }
 </style>

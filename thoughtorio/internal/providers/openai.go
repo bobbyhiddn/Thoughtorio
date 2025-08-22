@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -77,17 +79,22 @@ func (p *OpenAIProvider) FetchModels(ctx context.Context, apiKey string) ([]Mode
 		return nil, err
 	}
 
-	// Filter to only chat models
+	// Filter for GPT models that support chat completions
 	var models []Model
 	for _, model := range result.Data {
-		if model.ID == "gpt-3.5-turbo" || model.ID == "gpt-4" || model.ID == "gpt-4-turbo" ||
-			model.ID == "gpt-4o" || model.ID == "gpt-4o-mini" {
+		// Only include GPT models that support chat completions
+		if strings.HasPrefix(model.ID, "gpt") && !strings.Contains(model.ID, "instruct") && !strings.Contains(model.ID, "vision") {
 			models = append(models, Model{
 				ID:   model.ID,
-				Name: model.ID,
+				Name: model.ID, // Use ID as name as friendly names aren't always distinct or present
 			})
 		}
 	}
+
+	// Sort models by ID for consistency
+	sort.Slice(models, func(i, j int) bool {
+		return models[i].ID < models[j].ID
+	})
 
 	return models, nil
 }
@@ -99,7 +106,7 @@ func (p *OpenAIProvider) GetCompletion(ctx context.Context, model, prompt, apiKe
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
-		"max_tokens": 1000,
+		"max_completion_tokens": 1000,
 	}
 	
 	jsonBody, err := json.Marshal(reqBody)

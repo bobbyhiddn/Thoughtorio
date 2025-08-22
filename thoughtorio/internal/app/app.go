@@ -51,22 +51,38 @@ func (a *App) Greet(name string) string {
 
 // FetchOpenRouterModels fetches models from OpenRouter
 func (a *App) FetchOpenRouterModels(apiKey string) ([]providers.Model, error) {
-	return a.providerManager.FetchModels(a.ctx, "openrouter", apiKey)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.providerManager.FetchModels(ctx, "openrouter", apiKey)
 }
 
 // FetchOpenAIModels fetches models from OpenAI
 func (a *App) FetchOpenAIModels(apiKey string) ([]providers.Model, error) {
-	return a.providerManager.FetchModels(a.ctx, "openai", apiKey)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.providerManager.FetchModels(ctx, "openai", apiKey)
 }
 
 // FetchGeminiModels fetches models from Gemini
 func (a *App) FetchGeminiModels(apiKey string) ([]providers.Model, error) {
-	return a.providerManager.FetchModels(a.ctx, "gemini", apiKey)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.providerManager.FetchModels(ctx, "gemini", apiKey)
 }
 
 // FetchOllamaModels fetches models from Ollama
 func (a *App) FetchOllamaModels() ([]providers.Model, error) {
-	return a.providerManager.FetchModels(a.ctx, "local", "")
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.providerManager.FetchModels(ctx, "local", "")
 }
 
 // AICompletionResponse matches the expected frontend format
@@ -78,7 +94,11 @@ type AICompletionResponse struct {
 // GetAICompletion performs AI completion using the specified provider
 // Returns the same format as the old system for frontend compatibility
 func (a *App) GetAICompletion(provider, model, prompt, apiKey string) (AICompletionResponse, error) {
-	response, err := a.providerManager.GetCompletion(a.ctx, provider, model, prompt, apiKey)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	response, err := a.providerManager.GetCompletion(ctx, provider, model, prompt, apiKey)
 	
 	// Convert providers.AICompletionResponse to our frontend-compatible format
 	frontendResponse := AICompletionResponse{

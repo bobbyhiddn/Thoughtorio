@@ -114,12 +114,14 @@
     // Handle API key changes and trigger model loading
     function handleOpenRouterApiKeyChange() {
         clearErrors();
-        if ($settings.activeMode === 'openrouter' || $settings.activeMode === 'local') {
+        if ($settings.activeMode === 'openrouter') {
             if ($settings.openrouter_api_key) {
                 settingsActions.fetchModels($settings.activeMode, $settings.openrouter_api_key);
             } else {
                 settingsActions.clearModels();
             }
+        } else if ($settings.activeMode === 'local') {
+            settingsActions.fetchModels($settings.activeMode, '');
         }
     }
     
@@ -149,9 +151,13 @@
     async function handleModeSpecificModelLoad() {
         settingsActions.clearModels();
         
-        if ($settings.activeMode === 'openrouter' || $settings.activeMode === 'local') {
+        if ($settings.activeMode === 'openrouter') {
             if ($settings.openrouter_api_key && !$isModelListLoading) {
                 await settingsActions.fetchModels($settings.activeMode, $settings.openrouter_api_key);
+            }
+        } else if ($settings.activeMode === 'local') {
+            if (!$isModelListLoading) {
+                await settingsActions.fetchModels($settings.activeMode, '');
             }
         } else if ($settings.activeMode === 'openai') {
             if ($settings.openai_api_key && !$isModelListLoading) {
@@ -183,8 +189,8 @@
         if ($settings.activeMode === 'gemini' && !$settings.gemini_api_key) {
             errors.push('Gemini API Key is required for Gemini mode.');
         }
-        if (($settings.activeMode === 'openrouter' || $settings.activeMode === 'local') && !$settings.openrouter_api_key) {
-            errors.push('OpenRouter API Key is required for OpenRouter/Local mode.');
+        if ($settings.activeMode === 'openrouter' && !$settings.openrouter_api_key) {
+            errors.push('OpenRouter API Key is required for OpenRouter mode.');
         }
         if ($settings.activeMode === 'local' && !$settings.local_embedding_model_name) {
             errors.push('Ollama Embedding Model is required for Local mode.');
@@ -310,7 +316,7 @@
                     </div>
                     
                     <!-- OpenRouter API Key -->
-                    {#if $settings.activeMode === 'openrouter' || $settings.activeMode === 'local'}
+                    {#if $settings.activeMode === 'openrouter'}
                         <div class="form-group">
                             <label for="openrouterApiKey">OpenRouter API Key:</label>
                             <div class="api-key-input">
@@ -340,9 +346,7 @@
                                     {showOpenRouterKey ? "👁️" : "👁️‍🗨️"}
                                 </button>
                             </div>
-                            <p class="help-text">
-                                Used for LLM features. Get from <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">OpenRouter.ai</a>.
-                            </p>
+                            <p class="help-text">Required for accessing OpenRouter models.</p>
                         </div>
                     {/if}
                     
@@ -523,8 +527,8 @@
                             <label for="chat-model-select">
                                 Chat Model ({$settings.activeMode === 'openrouter' ? 'OpenRouter' : $settings.activeMode === 'local' ? 'Ollama' : $settings.activeMode.toUpperCase()}):
                             </label>
-                            {#if !$settings[`${$settings.activeMode === 'local' ? 'openrouter' : $settings.activeMode}_api_key`]}
-                                <p class="info-text">Set {$settings.activeMode === 'local' ? 'OpenRouter' : $settings.activeMode.toUpperCase()} API Key to load models.</p>
+                            {#if $settings.activeMode !== 'local' && !$settings[`${$settings.activeMode}_api_key`]}
+                                <p class="info-text">Set {$settings.activeMode.toUpperCase()} API Key to load models.</p>
                             {:else if $isModelListLoading}
                                 <span>Loading models...</span>
                             {:else if $modelListError}
@@ -551,8 +555,8 @@
                             <label for="story-processing-model-select">
                                 Processing Model ({$settings.activeMode === 'openrouter' ? 'OpenRouter' : $settings.activeMode === 'local' ? 'Ollama' : $settings.activeMode.toUpperCase()}):
                             </label>
-                            {#if !$settings[`${$settings.activeMode === 'local' ? 'openrouter' : $settings.activeMode}_api_key`]}
-                                <p class="info-text">Set {$settings.activeMode === 'local' ? 'OpenRouter' : $settings.activeMode.toUpperCase()} API Key to load models.</p>
+                            {#if $settings.activeMode !== 'local' && !$settings[`${$settings.activeMode}_api_key`]}
+                                <p class="info-text">Set {$settings.activeMode.toUpperCase()} API Key to load models.</p>
                             {:else if $isModelListLoading}
                                 <span>Loading models...</span>
                             {:else if $modelListError}

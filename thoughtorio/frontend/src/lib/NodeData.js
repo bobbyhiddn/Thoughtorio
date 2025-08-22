@@ -1,8 +1,9 @@
 /**
- * NodeData - Core node data management with YAML backend
- * Handles standardized node data structure, transformations, and serialization
+ * @fileoverview NodeData - Core data structure for workflow nodes
+ * Handles node state, input/output management, and context chain building
  */
 
+import { ContextEngine } from './ContextEngine.js';
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
 
 /**
@@ -44,7 +45,8 @@ export class NodeData {
             metadata: {
                 title: title || `${nodeType}_${id}`,
                 created_at: new Date().toISOString(),
-                version: 1
+                version: 1,
+                modified: false
             },
             inputs: [],
             processing: {},
@@ -86,7 +88,7 @@ export class NodeData {
         nodeData.data.processing = {
             type: 'ai_completion',
             model: '',
-            system_prompt: 'You are a component in a workflow processing information. Take the provided contextual information and facts, and provide a direct, relevant response based on that context. Process and respond to what you are given - do not ask questions or request clarification.',
+            system_prompt: 'You are a component in a workflow processing information. Take the provided contextual information and facts, and provide a direct, relevant response based on that context. Process and respond to what you are given - do not ask questions or request clarification.\n\nIMPORTANT: Respond with plain text only. Do NOT format your response as JSON, XML, or any structured format. Provide only the direct answer or content requested.',
             parameters: {
                 temperature: 0.7,
                 max_tokens: 1000
@@ -100,6 +102,7 @@ export class NodeData {
     updateContent(newContent) {
         this.data.content = newContent;
         this.data.metadata.version++;
+        this.data.metadata.modified = true;
 
 
         // THE FIX: Instead of just overwriting the output with the new content,
@@ -107,7 +110,40 @@ export class NodeData {
         // final output value by combining any existing inputs with the new content.
         this._updateOutput();
 
+        // Trigger auto-execute for workflows containing this node
+        this._triggerAutoExecute();
+
         return this;
+    }
+
+    // Trigger auto-execute for workflows containing this node (debounced)
+    _triggerAutoExecute() {
+        // Clear any existing timeout for this node
+        if (this._autoExecuteTimeout) {
+            clearTimeout(this._autoExecuteTimeout);
+        }
+
+        // Set new timeout for 1.5 seconds
+        this._autoExecuteTimeout = setTimeout(() => {
+            // Check if auto-execute is enabled
+            import('../stores/settings.js').then(({ settings }) => {
+                import('svelte/store').then(({ get }) => {
+                    const settingsValue = get(settings);
+                    if (settingsValue.autoExecuteWorkflows) {
+                        // Find workflows that contain this node
+                        import('../stores/workflows.js').then(({ workflowContainers, workflowActions }) => {
+                            const containers = get(workflowContainers);
+                            containers.forEach(container => {
+                                if (container.nodes && container.nodes.some(node => node.id === this.data.id)) {
+                                    console.log('Auto-executing workflow due to node modification (debounced):', container.id);
+                                    workflowActions.execute(container.id);
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+        }, 1500); // 1.5 seconds delay
     }
 
     // Input management
@@ -155,33 +191,9 @@ export class NodeData {
         // 1. Build the authoritative historical chain.
         const contextChain = this._buildContextChain();
 
-        // 2. Process the chain to create the structured payload.
-        const structuredValue = { facts: [], history: [], task: '' };
-        const seenFacts = new Set();
+        // 2. Build the structured value from the chain using ContextEngine.
+        const structuredValue = ContextEngine.buildStructuredContext(contextChain);
 
-        contextChain.forEach(item => {
-            const contrib = item.contribution;
-            if (!contrib) return;
-
-            switch (contrib.type) {
-                case 'fact':
-                    if (contrib.content && !seenFacts.has(contrib.content)) {
-                        structuredValue.facts.push(contrib.content);
-                        seenFacts.add(contrib.content);
-                    }
-                    break;
-                case 'task':
-                // The last task in the chain wins.
-                if (typeof contrib.content === 'string') {
-                    structuredValue.task = contrib.content;
-                }
-                break;
-                case 'history':
-                    structuredValue.history.push(contrib.content);
-                    break;
-            }
-        });
-        
         // 3. Set the final output values.
         this.data.output = {
             type: 'structured_context',
@@ -191,61 +203,9 @@ export class NodeData {
         };
     }
 
-    // REBUILT FROM SCRATCH: This is now the source of truth for lineage.
+    // Build context chain using ContextEngine
     _buildContextChain() {
-        const newChain = [];
-        const seenNodeIds = new Set();
-
-        // 1. Inherit the chain from all inputs recursively.
-        // This builds the complete history of how we got here.
-        this.data.inputs.forEach(input => {
-            if (input.context_chain && Array.isArray(input.context_chain)) {
-                input.context_chain.forEach(item => {
-                    if (!seenNodeIds.has(item.node_id)) {
-                        newChain.push(item);
-                        seenNodeIds.add(item.node_id);
-                    }
-                });
-            }
-        });
-
-        // 2. Add this node's own, new contribution to the chain.
-        if (this.data.content || this.data.node_type === 'dynamic') {
-            /** @type {ContextContribution | undefined} */
-            let contribution;
-            switch (this.data.node_type) {
-                case 'input':
-                case 'static':
-                    contribution = {
-                        type: this.data.purpose === 'task' ? 'task' : 'fact',
-                        content: this.data.content
-                    };
-                    break;
-                case 'dynamic':
-                    // A dynamic node contributes its result to the conversation history.
-                    contribution = {
-                        type: 'history',
-                        content: {
-                            role: 'assistant',
-                            content: this.data.execution.result_string || ''
-                        }
-                    };
-                    break;
-            }
-
-            if (contribution && contribution.content && !seenNodeIds.has(this.data.id)) {
-                 newChain.push({
-                    node_id: this.data.id,
-                    type: this.data.node_type,
-                    contribution: contribution, // The contribution is now a structured object
-                    processing: this.data.processing.type || 'unknown',
-                    timestamp: new Date().toISOString()
-                });
-                seenNodeIds.add(this.data.id);
-            }
-        }
-
-        return newChain;
+        return ContextEngine.buildContextChain(this.data, this.data.inputs);
     }
 
     // Execution state management
@@ -258,15 +218,22 @@ export class NodeData {
     }
 
     setCompleted(result = null) {
+        console.log(`NodeData.setCompleted called for ${this.data.id} with result:`, result);
+        console.log(`Current execution state before:`, this.data.execution.state);
+        
         this.data.execution.state = 'completed';
         this.data.execution.completed_at = new Date().toISOString();
         
         if (result !== null && this.data.node_type === 'dynamic') {
             // Store the raw string result. _updateOutput will structure it.
             this.data.execution.result_string = result;
+            // Update the node's content with the AI response
+            this.data.content = result;
+            console.log(`Updated content for ${this.data.id}:`, this.data.content);
             this._updateOutput(); // Trigger a re-evaluation
         }
         
+        console.log(`Execution state after completion:`, this.data.execution.state);
         return this;
     }
 
@@ -387,7 +354,7 @@ export class NodeData {
             promptParts.push(context.task);
         } else {
             promptParts.push(`\n--- YOUR TASK ---`);
-            promptParts.push("Review the information provided and provide a comprehensive response or continue the conversation naturally.");
+            promptParts.push("Provide an answer that is both factually correct and relevant to the context provided, without asking for clarification or additional information. Thank you for your service.");
         }
         
         const finalPrompt = promptParts.join('\n');
@@ -428,15 +395,7 @@ export class NodeData {
     }
 
     _collectSources(contextChain) {
-        const sources = new Set();
-        contextChain.forEach(item => {
-            sources.add(item.node_id);
-            // Also add original sources if they exist from a previous chain
-            if (item.sources && Array.isArray(item.sources)) {
-                item.sources.forEach(s => sources.add(s));
-            }
-        });
-        return Array.from(sources);
+        return ContextEngine.collectSources(contextChain);
     }
 
     // Deep clone

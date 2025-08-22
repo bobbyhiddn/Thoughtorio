@@ -279,6 +279,49 @@ export const connectionActions = {
             created: Date.now()
         };
         connections.update(c => [...c, connection]);
+        
+        // Check if auto-execute is enabled and trigger workflow execution (only once)
+        import('svelte/store').then(({ get }) => {
+            import('./settings.js').then(({ settings }) => {
+                const settingsValue = get(settings);
+                if (settingsValue.autoExecuteWorkflows) {
+                    // Small delay to ensure workflow containers are updated
+                    setTimeout(() => {
+                        // Check if the source node has been modified recently (within last 5 seconds)
+                        const sourceNodeData = get(nodeDataStore).get(fromId);
+                        if (!sourceNodeData) return;
+                        
+                        const lastModified = new Date(sourceNodeData.data.metadata.created_at).getTime();
+                        const now = Date.now();
+                        const timeSinceModified = now - lastModified;
+                        const version = sourceNodeData.data.metadata.version;
+                        
+                        const isModified = sourceNodeData.data.metadata.modified || false;
+                        
+                        console.log(`Auto-execute check - Node ${fromId}: version=${version}, modified=${isModified}, timeSinceModified=${timeSinceModified}ms`);
+                        
+                        // Only auto-execute if the source node has been modified
+                        if (isModified) {
+                            // Find workflows that contain either the from or to node
+                            import('./workflows.js').then(({ workflowContainers, workflowActions }) => {
+                                const containers = get(workflowContainers);
+                                containers.forEach(container => {
+                                    if (container.nodes && container.nodes.some(node => 
+                                        node.id === fromId || node.id === toId
+                                    )) {
+                                        console.log('Auto-executing workflow due to new connection with modified input:', container.id);
+                                        workflowActions.execute(container.id);
+                                    }
+                                });
+                            });
+                        } else {
+                            console.log('Skipping auto-execute: source node has not been modified');
+                        }
+                    }, 100);
+                }
+            });
+        });
+        
         return connection;
     },
     
