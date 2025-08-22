@@ -60,11 +60,6 @@ export class NodeData {
                 completed_at: null,
                 error: null
             },
-            history: [{
-                version: 1,
-                content: content,
-                timestamp: new Date().toISOString()
-            }]
         };
     }
 
@@ -106,12 +101,6 @@ export class NodeData {
         this.data.content = newContent;
         this.data.metadata.version++;
 
-        // Add to history
-        this.data.history.push({
-            version: this.data.metadata.version,
-            content: newContent,
-            timestamp: new Date().toISOString()
-        });
 
         // THE FIX: Instead of just overwriting the output with the new content,
         // we call _updateOutput(). This function correctly recalculates the
@@ -311,9 +300,7 @@ export class NodeData {
             inputs: this.data.inputs,
             processing: this.data.processing,
             output: this.data.output,
-            execution: this.data.execution,
-            // Only show last 3 history entries
-            history: this.data.history.slice(-3)
+            execution: this.data.execution
         };
         
         return yamlStringify(cleanData, { 
