@@ -6,8 +6,8 @@
     export let container;
     export let blockNodeInteractions = false;
     export let startConnection = null;
-    export let completeConnection = null;
-    export let isConnecting = false;
+    export const completeConnection = null;
+    export const isConnecting = false;
     
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -92,7 +92,7 @@
                     // Get current node position
                     let currentNode = null;
                     const unsubscribe = nodes.subscribe(nodeList => {
-                        currentNode = nodeList.find(n => n.id === nodeId);
+                        currentNode = nodeList.find(n => n.id === nodeId) || null;
                     });
                     unsubscribe();
                     

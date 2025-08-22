@@ -4,71 +4,134 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-This is a Go-based story development and content management system called "Thoughtorio" with the following key components:
+Thoughtorio is a visual node-based content creation platform built with **Wails v2** (Go backend + Svelte frontend). It enables users to create complex AI-powered workflows through a drag-and-drop interface with visual execution feedback.
 
-### Core Modules (in `legos/internal/`)
+### Core Architecture
 
-- **Database** (`database/`): SQLite-based data layer with support for:
-  - Codex entries (characters, locations, objects)
-  - Timeline/Arc structure (timelines → arcs → events → participants)
-  - Foreign key relationships and cascading deletes
-  - Uses `modernc.org/sqlite` driver
+**Frontend Stack (Svelte)**:
+- `thoughtorio/frontend/src/lib/` - Core UI components
+- `thoughtorio/frontend/src/stores/` - State management
+- Visual canvas with drag-and-drop node editing
+- Real-time execution state visualization
+- Context menus and clipboard operations
 
-- **Embeddings** (`embeddings/`): Vector embedding system supporting multiple providers:
-  - Provider interface pattern for OpenAI, Gemini, and local embeddings
-  - Cosine similarity search for content discovery
-  - Binary serialization of float32 vectors
-  - Database storage with provider versioning
+**Backend Stack (Go)**:
+- `thoughtorio/app.go` - Main Wails application with AI provider integrations
+- `thoughtorio/main.go` - Application entry point
+- Multi-provider AI support (OpenRouter, OpenAI, Gemini, Ollama)
+- File management (canvas save/load with .thoughtorio format)
+- System clipboard integration
 
-- **Arc Parsing** (`arcs/`): Markdown-based story structure parser:
-  - Parses structured markdown files into timeline/arc/event hierarchies
-  - Supports metadata extraction with participant linking
-  - Bidirectional conversion between database and markdown formats
-  - Regex-based parsing for headers, metadata, and participant references
+### Key Components
 
-- **LLM Integration** (`llm/`): Multi-provider LLM support:
-  - OpenRouter API integration for chat completions
-  - Configuration management in `~/.llore/config.json`
-  - Support for different model modes (local, openrouter, openai, gemini)
+**Node System**:
+- **Static Nodes**: Immutable content sources (`node_type: static`)
+- **Input Nodes**: User input processors with envelope/wrapper capabilities (`node_type: input`)
+- **AI Nodes**: Dynamic content transformation via LLM (`node_type: dynamic`)
+- Complete YAML-based data serialization for each node
 
-### Key Data Structures
+**Workflow System**:
+- **Node Machines**: Groups of connected nodes working as unified processors
+- **Node Factories**: Higher-level containers that can connect multiple machines
+- **Execution Engine**: Real-time workflow processing with visual feedback
+- **Context Preservation**: Complete data lineage tracking through processing chains
 
-- **Timeline Hierarchy**: Timeline → Arc → Event → Participants
-- **Codex System**: Entries with types, embeddings, and searchable content
-- **Participant Linking**: Events can reference codex entries as participants
+**Data Management**:
+- YAML backend for all node configurations (`lib/NodeData.js`)
+- Canvas state management with zoom/pan capabilities
+- Connection system for data flow between nodes
+- Persistent storage with recent files tracking
+
+### Multi-Provider AI Integration
+
+The Go backend (`app.go`) supports:
+- **OpenRouter**: `FetchOpenRouterModels()`, `getOpenRouterCompletion()`
+- **OpenAI**: `FetchOpenAIModels()`, `getOpenAICompletion()`
+- **Gemini**: `FetchGeminiModels()`, `getGeminiCompletion()`  
+- **Ollama**: `FetchOllamaModels()`, `getOllamaCompletion()`
+- Unified interface through `GetAICompletion(provider, model, prompt, apiKey)`
+
+### Key Features
+
+**Visual Workflow Builder**:
+- Drag-and-drop node creation and connection
+- Box selection and multi-node operations
+- Zoom/pan canvas navigation with smooth transitions
+- Real-time execution indicators and status
+
+**Advanced Data Flow**:
+- Multi-input node support with envelope/wrapper processing
+- Complete context chain preservation across transformations
+- Node type enforcement and validation
+- Hierarchical workflow composition (machines within factories)
+
+**File Operations**:
+- Save/load canvas files (.thoughtorio format)
+- Recent files tracking in user config directory
+- JSON-based canvas serialization
+- Clipboard operations for text and configurations
 
 ## Common Development Tasks
 
-### Database Operations
-- Initialize database with `database.DBInitialize(dbPath)`
-- All database operations use prepared statements and proper error handling
-- Foreign key constraints are enabled with cascading deletes
+### Node Operations
+- Create nodes: Use node type factories in `NodeData.js`
+- Connect nodes: Visual connection system with port validation
+- Execute workflows: `workflowActions.execute(containerId)` in `workflows.js`
+- Access node data: `nodeDataStore.get(nodeId).toCleanYAML()`
 
-### Embedding Workflow
-- Create embeddings: `embeddingService.CreateEmbedding(text)`
-- Search similar content: `embeddingService.FindSimilarEntries(query, limit)`
-- Provider-specific model identifiers track embedding versions
+### AI Integration
+- Get AI completion: `GetAICompletion(provider, model, prompt, apiKey)` 
+- Fetch available models: Provider-specific functions (e.g., `FetchOpenAIModels()`)
+- Handle responses: All providers return standardized `AICompletionResponse`
 
-### Arc Parsing
-- Parse markdown: `arcs.ParseArcMarkdown(content)`
-- Save to database: `arcs.SaveParsedArcToDatabase(dbConn, parsed)`
-- Convert back to markdown: `arcs.ConvertToMarkdown(parsed)`
+### Canvas Management
+- Save canvas: `SaveCanvas(canvasData)` opens save dialog
+- Load canvas: `LoadCanvas()` opens file dialog or `LoadCanvasFromPath(path)`
+- Recent files: `GetRecentCanvases()` returns recent canvas list
 
-### Configuration
-- LLM config stored in `~/.llore/config.json`
-- Use `llm.LoadOpenRouterConfig()` and `llm.SaveOpenRouterConfig()`
+### Execution State
+- Track execution: `executionState` store manages active/completed/error nodes
+- Visual feedback: Automatic UI updates for execution status
+- Workflow control: Start/stop execution via workflow containers
 
 ## Development Patterns
 
-- Consistent error handling with wrapped errors using `fmt.Errorf`
-- Structured logging with context information
-- Interface-based provider patterns for extensibility
-- Transaction-based database operations for data consistency
-- Mutex protection for shared configuration state
+- **Component Architecture**: Svelte components with reactive stores
+- **State Management**: Centralized stores for nodes, canvas, workflows, settings
+- **Error Handling**: Comprehensive error reporting with user feedback
+- **Type Safety**: Node type validation and connection rules
+- **Data Persistence**: YAML serialization for configuration export/import
+- **Cross-Platform**: Wails provides native desktop app experience
+
+## Project Structure
+
+```
+thoughtorio/
+├── app.go                    # Go backend (AI providers, file ops, clipboard)
+├── main.go                   # Wails application entry point
+├── frontend/src/
+│   ├── lib/
+│   │   ├── Canvas.svelte           # Main canvas component
+│   │   ├── Node.svelte            # Individual node component
+│   │   ├── WorkflowContainer.svelte # Node machine/factory containers
+│   │   ├── NodeData.js            # YAML data serialization system
+│   │   └── clipboard.js           # Copy/paste operations
+│   └── stores/
+│       ├── nodes.js               # Node state and operations
+│       ├── canvas.js              # Canvas viewport and selection
+│       ├── workflows.js           # Execution and container management
+│       ├── executionState.js      # Real-time execution tracking
+│       └── settings.js            # AI provider configuration
+└── NODE_ARCHITECTURE.md      # Detailed node type specifications
+```
 
 ## Dependencies
 
-Based on imports, the project uses:
-- `modernc.org/sqlite` for SQLite database
-- Standard library packages for HTTP, JSON, regex
-- No main.go found - this appears to be a library/module collection
+**Backend (Go)**:
+- `github.com/wailsapp/wails/v2` - Desktop app framework
+- Standard library for HTTP, JSON, file operations
+
+**Frontend (Svelte)**:
+- Svelte reactive framework
+- Custom YAML serialization
+- Canvas-based UI with CSS animations

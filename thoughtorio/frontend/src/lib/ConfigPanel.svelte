@@ -1,6 +1,6 @@
 <script>
     import { canvasState } from '../stores/canvas.js';
-    import { nodeActions, nodeDataStore } from '../stores/nodes.js';
+    import { nodeActions, nodeDataStore, connections } from '../stores/nodes.js';
     import { workflowContainers } from '../stores/workflows.js';
     import { copyText } from './clipboard.js';
     
@@ -48,7 +48,7 @@
                 }
             } else if (entityType === 'connection') {
                 // For connections, show connection details
-                const connection = $canvasState.connections?.find(c => c.id === selectedEntity);
+                const connection = $connections?.find(c => c.id === selectedEntity);
                 if (connection) {
                     yamlConfig = `# Connection Configuration
 id: ${connection.id}

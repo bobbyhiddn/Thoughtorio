@@ -1,6 +1,6 @@
 # Thoughtorio - Node-Based Content Creation Platform
 
-Thoughtorio is a powerful, visual node-based platform for creating complex content workflows using AI and structured data processing. Build everything from simple content generators to sophisticated multi-stage processing pipelines.
+Thoughtorio is a powerful, visual node-based platform for creating complex content workflows using AI and structured data processing. Build everything from simple content generators to sophisticated multi-stage processing pipelines with a fully functional context engine and real-time execution feedback.
 
 ## 🌟 Core Concepts
 
@@ -99,8 +99,9 @@ rules:
 ### Backend Integration
 - **Wails v2**: Go backend with web frontend
 - **Multi-Provider AI**: OpenAI, Gemini, OpenRouter, Local (Ollama)
-- **SQLite Database**: Data persistence (via Go backend)
-- **File Management**: Canvas save/load functionality
+- **File Management**: Canvas save/load functionality (.thoughtorio format)
+- **Context Engine**: Complete workflow context preservation and lineage tracking
+- **Execution State**: Real-time workflow execution monitoring
 
 ### Data Structures
 ```
@@ -108,7 +109,9 @@ Canvas
 ├── Nodes (Visual + YAML Backend)
 ├── Connections (Input/Output relationships)  
 ├── Node Machines (Grouped workflows)
-└── Execution State (Real-time processing)
+├── Node Factories (Multi-machine containers)
+├── Execution State (Real-time processing)
+└── Context Engine (Complete data lineage)
 ```
 
 ## 🎯 Usage Examples
@@ -180,17 +183,20 @@ thoughtorio/
 │   │   ├── lib/
 │   │   │   ├── Canvas.svelte         # Main canvas component
 │   │   │   ├── Node.svelte          # Individual node component  
-│   │   │   ├── WorkflowContainer.svelte  # Node machine component
+│   │   │   ├── WorkflowContainer.svelte  # Node machine/factory component
 │   │   │   ├── NodeData.js          # YAML backend system
 │   │   │   ├── ContextMenu.svelte   # Right-click menus
+│   │   │   ├── ConfigPanel.svelte   # Node configuration viewer
 │   │   │   └── clipboard.js         # Copy/paste utilities
 │   │   ├── stores/
 │   │   │   ├── nodes.js            # Node state management
 │   │   │   ├── canvas.js           # Canvas viewport state  
 │   │   │   ├── workflows.js        # Execution & machines
+│   │   │   ├── executionState.js   # Real-time execution tracking
 │   │   │   └── settings.js         # AI provider settings
 │   │   └── assets/                # SVG cursors and icons
-├── app.go                    # Go backend (Wails)
+├── app.go                    # Go backend (Wails + AI providers)
+├── main.go                   # Application entry point
 ├── NODE_ARCHITECTURE.md      # Technical specification
 └── README.md                # This file
 ```
