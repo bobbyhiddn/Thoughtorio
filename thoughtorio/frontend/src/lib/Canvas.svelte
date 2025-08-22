@@ -17,6 +17,7 @@
     let isConnecting = false;
     let tempConnection = null;
     let mousePosition = { x: 0, y: 0 };
+    let connectionMode = 'drag'; // 'drag' or 'click'
     let isBoxSelecting = false;
     let boxSelectionStart = { x: 0, y: 0 };
     let lastBoxSelectionTime = 0;
@@ -214,10 +215,10 @@
         
         isDragging = false;
         
-        if (isConnecting) {
-            // Cancel connection if not dropped on a valid target
-            isConnecting = false;
-            tempConnection = null;
+        // Don't cancel connection on mouse up in click mode - let it continue until clicked again
+        if (isConnecting && connectionMode === 'drag') {
+            // Cancel connection if not dropped on a valid target in drag mode
+            cancelConnection();
         }
         
         if (isBoxSelecting) {
@@ -403,12 +404,29 @@
     }
     
     // Connection handling functions
-    function startConnection(fromNodeId, fromPort) {
+    function startConnection(fromNodeId, fromPort, event = null) {
         // Check if it's a node or a machine
         const fromNode = $nodes.find(n => n.id === fromNodeId);
         const fromMachine = $workflowContainers.find(c => c.id === fromNodeId);
         
         if (!fromNode && !fromMachine) return;
+        
+        // If already connecting and clicking the same port, cancel
+        if (isConnecting && tempConnection && tempConnection.fromNodeId === fromNodeId && tempConnection.fromPort === fromPort) {
+            cancelConnection();
+            return;
+        }
+        
+        // If already connecting, complete with this as target if it's an input
+        if (isConnecting && fromPort === 'input') {
+            completeConnection(fromNodeId, fromPort);
+            return;
+        }
+        
+        // Cancel any existing connection
+        if (isConnecting) {
+            cancelConnection();
+        }
         
         isConnecting = true;
         let portX, portY;
@@ -433,6 +451,13 @@
             isFromMachine: !!fromMachine
         };
         
+        // Set initial end position to mouse if available
+        if (event) {
+            const canvasCoords = screenToCanvas(event.clientX, event.clientY);
+            tempConnection.endX = canvasCoords.x;
+            tempConnection.endY = canvasCoords.y;
+        }
+        
         canvasState.update(s => ({ ...s, mode: 'connecting' }));
     }
     
@@ -441,6 +466,13 @@
         
         // Don't connect to same node/machine
         if (tempConnection.fromNodeId === toNodeId) {
+            cancelConnection();
+            return;
+        }
+        
+        // Only allow output-to-input connections
+        if (tempConnection.fromPort === 'input' || toPort === 'output') {
+            console.log('Can only connect from output to input');
             cancelConnection();
             return;
         }
@@ -545,6 +577,16 @@
         // Focus canvas for keyboard events
         if (canvasElement) {
             canvasElement.focus();
+        }
+        
+        // If connecting in click mode and clicking empty space, cancel connection
+        if (isConnecting) {
+            const clickedOnNode = event.target.closest('.node-card');
+            const clickedOnConnection = event.target.closest('.connection-group');
+            if (!clickedOnNode && !clickedOnConnection) {
+                cancelConnection();
+                return;
+            }
         }
         
         // Only clear selection if this wasn't a box selection and we're not clicking on nodes

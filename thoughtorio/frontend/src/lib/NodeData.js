@@ -86,7 +86,7 @@ export class NodeData {
         nodeData.data.processing = {
             type: 'ai_completion',
             model: '',
-            system_prompt: 'You are a component in a workflow. The user is building a machine or factory. Interpret prompts in this context. The term \'machine\' refers to the workflow you are part of. Respond in a way that is direct and answers the machine or factory\'s goal.',
+            system_prompt: 'You are a component in a workflow processing information. Take the provided contextual information and facts, and provide a direct, relevant response based on that context. Process and respond to what you are given - do not ask questions or request clarification.',
             parameters: {
                 temperature: 0.7,
                 max_tokens: 1000
@@ -316,7 +316,7 @@ export class NodeData {
             node: {
                 id: this.data.id,
                 type: this.data.node_type,
-                content: this.data.node_type === 'dynamic' ? (this.data.output.value || "") : (this.data.content || ""),
+                content: this.data.node_type === 'dynamic' ? (this.data.execution.result_string || this.data.content || "") : (this.data.content || ""),
             }
         };
         

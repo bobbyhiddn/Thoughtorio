@@ -165,10 +165,17 @@ export const nodeActions = {
                 nodeData.removeInput(sourceId);
                 newStore.set(nodeId, nodeData);
                 
-                // Update visual node content
-                if (nodeData.data.node_type !== 'dynamic') {
+                // Update visual node content - but only for input/static nodes and only with their original content
+                if (nodeData.data.node_type === 'input' || nodeData.data.node_type === 'static') {
+                    // For input nodes, preserve their original content, don't replace with processed output
+                    const displayContent = nodeData.data.node_type === 'input' 
+                        ? nodeData.data.content 
+                        : (typeof nodeData.data.output.value === 'string' 
+                            ? nodeData.data.output.value 
+                            : nodeData.data.content);
+                    
                     nodes.update(n => n.map(node => 
-                        node.id === nodeId ? { ...node, content: nodeData.data.output.value } : node
+                        node.id === nodeId ? { ...node, content: displayContent } : node
                     ));
                 }
             }

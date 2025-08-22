@@ -121,7 +121,7 @@
         <path
             d={pathData}
             stroke="transparent"
-            stroke-width="12"
+            stroke-width="16"
             fill="none"
             cursor="pointer"
             on:click={handleConnectionClick}
@@ -129,6 +129,7 @@
             tabindex="0"
             role="button"
             aria-label="Select connection"
+            style="pointer-events: all;"
         />
         
         <!-- Selection stroke (wider background) -->
@@ -155,9 +156,11 @@
         
         <!-- Delete button when selected -->
         {#if isSelected}
+            {@const start = getPortCoordinates(fromNode, connection.fromPort)}
+            {@const end = getPortCoordinates(toNode, connection.toPort)}
             {@const midPoint = { 
-                x: (fromNode.x + fromNode.width + toNode.x) / 2, 
-                y: (fromNode.y + fromNode.height/2 + toNode.y + toNode.height/2) / 2 
+                x: (start.x + end.x) / 2, 
+                y: (start.y + end.y) / 2 
             }}
             <g 
                 class="delete-button-group"
@@ -166,11 +169,12 @@
                 aria-label="Delete connection"
                 on:click|stopPropagation={handleConnectionDelete}
                 on:keydown|stopPropagation={handleDeleteKeyDown}
+                style="pointer-events: all;"
             >
                 <circle
                     cx={midPoint.x}
                     cy={midPoint.y}
-                    r="12"
+                    r="10"
                     fill="#ff4444"
                     stroke="white"
                     stroke-width="2"
@@ -179,13 +183,14 @@
                 />
                 <text
                     x={midPoint.x}
-                    y={midPoint.y + 4}
+                    y={midPoint.y + 3}
                     text-anchor="middle"
                     fill="white"
-                    font-size="14"
+                    font-size="12"
                     font-weight="bold"
                     cursor="pointer"
                     class="delete-text"
+                    style="pointer-events: none;"
                 >×</text>
             </g>
         {/if}
@@ -207,16 +212,34 @@
         stroke-width: 3;
     }
     
+    .delete-button-group {
+        pointer-events: all;
+    }
+    
     .delete-button {
-        transition: all 0.2s ease;
+        transition: all 0.15s ease;
+        pointer-events: all;
     }
     
     .delete-button:hover {
-        transform: scale(1.1);
-        filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+        r: 12;
+        fill: #cc0000;
     }
     
     .delete-text {
+        pointer-events: none;
+        user-select: none;
+    }
+    
+    .connection-group {
+        pointer-events: none;
+    }
+    
+    .connection-group path {
+        pointer-events: all;
+    }
+    
+    .connection-group .connection-line {
         pointer-events: none;
     }
 </style>
