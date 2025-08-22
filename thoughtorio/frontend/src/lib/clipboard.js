@@ -197,10 +197,45 @@ export async function copyNodeMetadata(nodeData) {
 }
 
 /**
- * Copy node configuration (elegant YAML format)
+ * Copy node configuration in elegant format
+ * @param {NodeData} nodeData - Node data to copy
+ * @param {string} visualContent - Visual content from the node (optional)
+ * @returns {Promise<{success: boolean, elegantConfig?: string, error?: string}>}
  */
-export async function copyNodeConfig(nodeData, connections = []) {
-    return copyElegantNodeConfig(nodeData, connections);
+export async function copyNodeConfig(nodeData, visualContent = null) {
+    try {
+        const elegantConfig = nodeData.toElegantConfig(visualContent);
+        console.log('Generated elegant config:', elegantConfig);
+        
+        // Copy the elegant YAML to system clipboard
+        const result = await copyText(elegantConfig);
+        
+        // Store structured data in internal clipboard for paste operations
+        const configData = {
+            type: 'elegant_node_config',
+            version: '1.0',
+            timestamp: new Date().toISOString(),
+            config: elegantConfig,
+            nodeType: nodeData.data.node_type,
+            nodeId: nodeData.data.id
+        };
+        
+        internalClipboard = {
+            type: 'elegant_node_config',
+            data: configData,
+            timestamp: Date.now()
+        };
+        
+        return { 
+            success: result.success, 
+            method: result.method,
+            elegantConfig,
+            internal: true
+        };
+    } catch (error) {
+        console.error('Failed to copy node config:', error);
+        return { success: false, error: error.message };
+    }
 }
 
 /**

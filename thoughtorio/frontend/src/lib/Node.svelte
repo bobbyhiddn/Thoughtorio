@@ -183,7 +183,7 @@
                     const nodeData = nodeActions.getNodeData(node.id);
                     console.log('Retrieved node data:', nodeData);
                     if (nodeData) {
-                        const configResult = await copyNodeConfig(nodeData);
+                        const configResult = await copyNodeConfig(nodeData, node.content);
                         if (configResult.success) {
                             console.log('Node config copied to clipboard successfully');
                             console.log('Config:', configResult.elegantConfig);

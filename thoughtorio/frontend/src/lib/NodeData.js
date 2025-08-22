@@ -311,12 +311,12 @@ export class NodeData {
     }
     
     // Elegant, concise config format
-    toElegantConfig() {
+    toElegantConfig(visualContent = null) {
         const config = {
             node: {
                 id: this.data.id,
                 type: this.data.node_type,
-                content: this.data.node_type === 'dynamic' ? (this.data.execution.result_string || this.data.content || "") : (this.data.content || ""),
+                content: visualContent || (this.data.node_type === 'dynamic' ? (this.data.execution.result_string || this.data.content || "") : (this.data.content || "")),
             }
         };
         
