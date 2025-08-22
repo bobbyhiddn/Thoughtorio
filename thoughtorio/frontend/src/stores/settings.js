@@ -170,8 +170,11 @@ export const settingsActions = {
             
             console.log(`Fetching models for ${providerId}...`);
             
+            // Declare models variable first
+            let models = [];
+            
             // Check if Wails is available - if not, provide fallback data for development
-            if (!window.go || !window.go.main || !window.go.main.App) {
+            if (!window.go || !window.go.app || !window.go.app.App) {
                 console.warn('Wails runtime not available - using fallback data for development');
                 
                 // Provide fallback data for development mode
@@ -203,16 +206,15 @@ export const settingsActions = {
                 return models;
             }
             
-            let models = [];
-            
+            // Make actual API calls using new backend structure
             if (providerId === 'openrouter') {
-                models = await window.go.main.App.FetchOpenRouterModels(apiKey);
+                models = await window.go.app.App.FetchOpenRouterModels(apiKey);
             } else if (providerId === 'openai') {
-                models = await window.go.main.App.FetchOpenAIModels(apiKey);
+                models = await window.go.app.App.FetchOpenAIModels(apiKey);
             } else if (providerId === 'gemini') {
-                models = await window.go.main.App.FetchGeminiModels(apiKey);
+                models = await window.go.app.App.FetchGeminiModels(apiKey);
             } else if (providerId === 'local') {
-                models = await window.go.main.App.FetchOllamaModels();
+                models = await window.go.app.App.FetchOllamaModels();
             }
             
             modelList.set(models || []);
@@ -234,7 +236,7 @@ export const settingsActions = {
             embeddingModelListError.set('');
             
             // Check if Wails is available - if not, provide fallback data for development
-            if (!window.go || !window.go.main || !window.go.main.App) {
+            if (!window.go || !window.go.app || !window.go.app.App) {
                 console.warn('Wails runtime not available - using fallback embedding models for development');
                 
                 const models = [
@@ -247,7 +249,7 @@ export const settingsActions = {
             }
             
             // Use Ollama models for embedding (same API)
-            const models = await window.go.main.App.FetchOllamaModels();
+            const models = await window.go.app.App.FetchOllamaModels();
             
             embeddingModelList.set(models || []);
             return models || [];

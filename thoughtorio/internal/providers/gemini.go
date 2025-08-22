@@ -110,10 +110,6 @@ func (p *GeminiProvider) FetchModels(ctx context.Context, apiKey string) ([]Mode
 
 			// Ensure we have a valid model ID
 			if sdkModelID != "" {
-				models[len(models)] = Model{
-					ID:   sdkModelID,
-					Name: model.DisplayName,
-				}
 				models = append(models, Model{
 					ID:   sdkModelID,
 					Name: model.DisplayName,
