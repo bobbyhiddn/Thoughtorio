@@ -498,12 +498,25 @@ async function executeWorkflow(container) {
             if (inputText && inputText.trim()) {
                 try {
                     console.log(`   - Calling AI for: ${node.id}`);
-                    const response = await window.go.main.App.GetAICompletion(
+                    
+                    // Check if Wails runtime is available
+                    if (!window.go || !window.go.app || !window.go.app.App) {
+                        console.error('Wails runtime check failed. Available paths:', {
+                            'window.go': !!window.go,
+                            'window.go.main': !!window.go?.main,
+                            'window.go.app': !!window.go?.app
+                        });
+                        throw new Error('Wails runtime not available. Make sure the app is properly initialized.');
+                    }
+                    
+                    const response = await window.go.app.App.GetAICompletion(
                         currentSettings.activeMode,
                         currentSettings.story_processing_model_id,
                         inputText,
                         apiKey
                     );
+
+                    console.log(`   - AI Response:`, response);
 
                     if (response && response.Content) {
                         nodeActions.setNodeCompleted(nodeId, response.Content);

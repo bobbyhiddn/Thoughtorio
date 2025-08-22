@@ -1,4 +1,4 @@
-export namespace main {
+export namespace app {
 	
 	export class AICompletionResponse {
 	    Content: string;
@@ -12,6 +12,11 @@ export namespace main {
 	        this.Content = source["Content"];
 	    }
 	}
+
+}
+
+export namespace models {
+	
 	export class CanvasFileResult {
 	    success: boolean;
 	    path?: string;
@@ -44,20 +49,6 @@ export namespace main {
 	        this.success = source["success"];
 	        this.data = source["data"];
 	        this.error = source["error"];
-	    }
-	}
-	export class Model {
-	    id: string;
-	    name: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new Model(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
 	    }
 	}
 	export class RecentCanvas {
@@ -109,6 +100,25 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace providers {
+	
+	export class Model {
+	    id: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Model(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	    }
 	}
 
 }
