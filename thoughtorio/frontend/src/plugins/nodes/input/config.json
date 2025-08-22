@@ -1,0 +1,25 @@
+{
+  "id": "text-input",
+  "name": "Text Input",
+  "version": "1.0.0",
+  "category": "input",
+  "description": "A basic text input node that can envelope and wrap content from other nodes",
+  "author": "Thoughtorio Core Team",
+  "icon": "✏️",
+  "color": {
+    "primary": "#3b82f6",
+    "secondary": "#dbeafe",
+    "text": "#1e3a8a"
+  },
+  "connections": {
+    "canReceiveInputs": true,
+    "canCreateOutputs": true,
+    "maxInputs": -1,
+    "maxOutputs": -1
+  },
+  "settings": {
+    "allowCustomContent": true,
+    "supportEnveloping": true,
+    "defaultEnvelopeStyle": "prompt_wrapper"
+  }
+}
