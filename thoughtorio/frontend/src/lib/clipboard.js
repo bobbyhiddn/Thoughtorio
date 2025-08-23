@@ -63,6 +63,20 @@ function createElegantNodeConfig(node, nodeData, nodesList, connections = [], co
 
 // REPLACE THE OLD FUNCTIONS WITH THIS ENTIRE BLOCK
 
+// Generic connection function - object agnostic
+async function createConnection(fromId, toId, connectionSet, createdConnections) {
+    if (!fromId || !toId) return false;
+    
+    const key = `${fromId}->${toId}`;
+    if (connectionSet.has(key)) return false; // Already exists
+    
+    const { connectionActions } = await import('../stores/nodes.js');
+    connectionActions.add(fromId, toId, 'output', 'input');
+    createdConnections.push({ fromId, toId });
+    connectionSet.add(key);
+    return true;
+}
+
 // Helper functions to create nodes/containers from configs
 async function createNodeFromConfig(nodeConfig, offsetX = 0, offsetY = 0) {
     const { nodeActions } = await import('../stores/nodes.js');
@@ -306,13 +320,8 @@ async function createFactoryFromConfig(factoryConfig, offsetX = 0, offsetY = 0) 
     const factoryIdMap = new Map(); // oldFactoryId -> newFactoryId  
     const machineIdMap = new Map(); // oldMachineId -> newMachineId
     
-    // Find the factory container that was created
-    const createdFactory = factoryContainers.find(c => c.isFactory);
-    if (createdFactory) {
-        factoryIdMap.set(factoryConfig.id, createdFactory.id);
-    }
-    
-    // Find machine containers for each original machine
+    // Find machine containers for each original machine first
+    const createdMachineContainers = [];
     for (const [oldMachineId, newNodeIds] of oldMachineToNewNodeIds.entries()) {
         const machineContainer = factoryContainers.find(c => 
             !c.isFactory && !c.isNetwork && c.nodes &&
@@ -320,7 +329,72 @@ async function createFactoryFromConfig(factoryConfig, offsetX = 0, offsetY = 0) 
         );
         if (machineContainer) {
             machineIdMap.set(oldMachineId, machineContainer.id);
+            createdMachineContainers.push(machineContainer);
         }
+    }
+    
+    // Find the factory container that was created
+    let createdFactory = factoryContainers.find(c => c.isFactory);
+    
+    // If no factory was auto-created but we have multiple machines or factory standalone nodes, 
+    // we need to create factory-level connections to trigger factory detection
+    if (!createdFactory && (createdMachineContainers.length > 1 || (factoryConfig.nodes && factoryConfig.nodes.length > 0))) {
+        console.log('🏭 No factory auto-detected, creating factory-level connections to trigger detection');
+        
+        // If we have factory standalone nodes, create connections from machines to those nodes
+        if (factoryConfig.nodes && factoryConfig.nodes.length > 0) {
+            for (const nodeConfig of factoryConfig.nodes) {
+                if (nodeConfig.context && nodeConfig.context.startsWith('machine-')) {
+                    const machineId = machineIdMap.get(nodeConfig.context);
+                    const standaloneNodeId = standaloneNodeIdMap.get(nodeConfig.id);
+                    if (machineId && standaloneNodeId) {
+                        console.log('🏭 Creating factory-triggering connection:', machineId, '->', standaloneNodeId);
+                        connectionActions.add(machineId, standaloneNodeId, 'output', 'input');
+                    }
+                }
+            }
+        } else if (createdMachineContainers.length > 1) {
+            // Multiple machines with no standalone nodes - create a temporary node to trigger factory detection
+            console.log('🏭 Multiple machines detected, creating temporary trigger node');
+            
+            // Create a temporary node that will trigger factory detection
+            const tempNodeConfig = {
+                type: 'dynamic',
+                content: 'temp',
+                x: (factoryConfig.machines[0]?.nodes?.[0]?.x || 0) + offsetX + 50,
+                y: (factoryConfig.machines[0]?.nodes?.[0]?.y || 0) + offsetY + 50,
+                context: 'none'
+            };
+            
+            const { node: tempNode } = await createNodeFromConfig(tempNodeConfig, 0, 0);
+            const firstMachineId = createdMachineContainers[0]?.id;
+            
+            if (firstMachineId) {
+                // Create connection from first machine to temp node to trigger factory detection
+                console.log('🏭 Creating temp connection:', firstMachineId, '->', tempNode.id);
+                connectionActions.add(firstMachineId, tempNode.id, 'output', 'input');
+                
+                // Wait for factory to be created
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                // Remove the temporary node
+                const { nodeActions } = await import('../stores/nodes.js');
+                console.log('🏭 Removing temporary trigger node:', tempNode.id);
+                nodeActions.remove(tempNode.id);
+            }
+        }
+        
+        // Wait for factory container to be created by the workflow detection system
+        await new Promise(resolve => setTimeout(resolve, 150));
+        const updatedContainers = await getCurrentContainers();
+        createdFactory = updatedContainers.find(c => c.isFactory);
+    }
+    
+    if (createdFactory) {
+        factoryIdMap.set(factoryConfig.id, createdFactory.id);
+        console.log('🏭 Factory container found:', createdFactory.id);
+    } else {
+        console.warn('🏭 No factory container created for factory:', factoryConfig.id);
     }
     
     return { 
@@ -335,136 +409,390 @@ async function createFactoryFromConfig(factoryConfig, offsetX = 0, offsetY = 0) 
 async function createNetworkFromConfig(networkConfig, offsetX = 0, offsetY = 0) {
     console.log('🌐 Creating network from config:', networkConfig);
 
-    const nodes = [];
-    const connections = [];
-    const factoryIdMap = new Map(); // oldFactoryId -> newFactoryId
-    const machineIdMap = new Map(); // oldMachineId -> newMachineId
-
-    // Step 1: Create all constituent factories and machines
+    const { connectionActions } = await import('../stores/nodes.js');
+    
+    // Step 1: Create ALL nodes first and build complete ID mapping
+    console.log('🌐 Step 1: Creating all nodes first...');
+    const allNodes = [];
+    const globalNodeIdMap = new Map(); // oldId -> newId for ALL nodes
+    const factoryNodeMap = new Map(); // factoryId -> Set of node IDs
+    const machineNodeMap = new Map(); // machineId -> Set of node IDs
+    
+    // Create nodes from factories
     for (const factoryConfig of networkConfig.factories || []) {
-        const result = await createFactoryFromConfig(factoryConfig, offsetX, offsetY);
-        nodes.push(...result.nodes);
-        connections.push(...result.connections);
+        const factoryStandaloneNodes = new Set(); // Only standalone nodes, NOT machine nodes
         
-        // Build factory ID mapping if the result includes factory mapping
-        if (result.factoryIdMap) {
-            for (const [oldId, newId] of result.factoryIdMap.entries()) {
-                factoryIdMap.set(oldId, newId);
+        // Create nodes from machines within factories
+        for (const machineConfig of factoryConfig.machines || []) {
+            const machineNodes = new Set();
+            for (const nodeConfig of machineConfig.nodes || []) {
+                const { node } = await createNodeFromConfig(nodeConfig, offsetX, offsetY);
+                allNodes.push(node);
+                globalNodeIdMap.set(nodeConfig.id, node.id);
+                machineNodes.add(node.id);
+                // DON'T add machine nodes to factory node set - they belong to machines
             }
+            machineNodeMap.set(machineConfig.id, machineNodes);
         }
-        if (result.machineIdMap) {
-            for (const [oldId, newId] of result.machineIdMap.entries()) {
-                machineIdMap.set(oldId, newId);
-            }
+        
+        // Create standalone nodes in factories (these will be in the factory container)
+        for (const nodeConfig of factoryConfig.nodes || []) {
+            const { node } = await createNodeFromConfig(nodeConfig, offsetX, offsetY);
+            allNodes.push(node);
+            globalNodeIdMap.set(nodeConfig.id, node.id);
+            factoryStandaloneNodes.add(node.id);
         }
+        
+        factoryNodeMap.set(factoryConfig.id, factoryStandaloneNodes);
     }
-
+    
+    // Create nodes from machines (network-level)
     for (const machineConfig of networkConfig.machines || []) {
-        const result = await createMachineFromConfig(machineConfig, offsetX, offsetY);
-        nodes.push(...result.nodes);
-        connections.push(...result.connections);
-        
-        if (result.machineIdMap) {
-            for (const [oldId, newId] of result.machineIdMap.entries()) {
-                machineIdMap.set(oldId, newId);
-            }
+        const machineNodes = new Set();
+        for (const nodeConfig of machineConfig.nodes || []) {
+            const { node } = await createNodeFromConfig(nodeConfig, offsetX, offsetY);
+            allNodes.push(node);
+            globalNodeIdMap.set(nodeConfig.id, node.id);
+            machineNodes.add(node.id);
         }
+        machineNodeMap.set(machineConfig.id, machineNodes);
     }
-
+    
+    // Create standalone nodes (network-level)
     for (const nodeConfig of networkConfig.nodes || []) {
         const { node } = await createNodeFromConfig(nodeConfig, offsetX, offsetY);
-        nodes.push(node);
+        allNodes.push(node);
+        globalNodeIdMap.set(nodeConfig.id, node.id);
     }
-
-    // Step 2: Wait for workflow containers to be detected
-    console.log('🌐 Waiting for factory and machine containers to be created...');
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Step 3: Find the newly created factory and machine containers
-    const networkContainers = await getCurrentContainers();
     
-    const createdFactories = networkContainers.filter(c => c.isFactory);
-    const createdMachines = networkContainers.filter(c => !c.isFactory && !c.isNetwork);
+    console.log('🌐 Created', allNodes.length, 'total nodes');
     
-    console.log('🌐 Found containers after network creation:', {
-        factories: createdFactories.map(f => f.id),
-        machines: createdMachines.map(m => m.id)
-    });
-
-    // Step 4: Create network-level connections using the same pattern as factory connections
-    const { connectionActions } = await import('../stores/nodes.js');
-    const createdHierarchicalConnections = new Set();
+    // Step 2: Connect nodes based on context relationships
+    console.log('🌐 Step 2: Connecting nodes based on context...');
+    const createdConnections = [];
+    const connectionSet = new Set();
     
-    // Build node ID map for network-level standalone nodes
-    const networkNodeIdMap = new Map();
-    for (const nodeConfig of networkConfig.nodes || []) {
-        const createdNode = nodes.find(n => 
-            Math.abs(n.x - (nodeConfig.x + offsetX)) < 1 && 
-            Math.abs(n.y - (nodeConfig.y + offsetY)) < 1 &&
-            n.type === nodeConfig.type
-        );
-        if (createdNode) {
-            networkNodeIdMap.set(nodeConfig.id, createdNode.id);
-            console.log('🌐 Mapped network node:', nodeConfig.id, '->', createdNode.id);
+    // Helper function to process node connections
+    async function connectNode(nodeConfig) {
+        const newNodeId = globalNodeIdMap.get(nodeConfig.id);
+        
+        // Handle single context input
+        if (nodeConfig.context && nodeConfig.context !== 'none') {
+            const newContextId = globalNodeIdMap.get(nodeConfig.context);
+            await createConnection(newContextId, newNodeId, connectionSet, createdConnections);
+        }
+        
+        // Handle multiple inputs
+        if (nodeConfig.inputs) {
+            for (const inputId of nodeConfig.inputs) {
+                const newInputId = globalNodeIdMap.get(inputId);
+                await createConnection(newInputId, newNodeId, connectionSet, createdConnections);
+            }
+        }
+        
+        // Handle outputs
+        if (nodeConfig.outputs) {
+            for (const outputId of nodeConfig.outputs) {
+                const newOutputId = globalNodeIdMap.get(outputId);
+                await createConnection(newNodeId, newOutputId, connectionSet, createdConnections);
+            }
         }
     }
     
-    console.log('🌐 Processing', (networkConfig.nodes || []).length, 'network standalone nodes for connections');
-    
-    // Create connections for network standalone nodes - copying factory pattern exactly
-    for (const nodeConfig of networkConfig.nodes || []) {
-        const newStandaloneNodeId = networkNodeIdMap.get(nodeConfig.id);
+    // Connect nodes within factory machines
+    for (const factoryConfig of networkConfig.factories || []) {
+        for (const machineConfig of factoryConfig.machines || []) {
+            for (const nodeConfig of machineConfig.nodes || []) {
+                await connectNode(nodeConfig);
+            }
+        }
         
-        // Network-level hierarchical connection: factory -> standalone node
-        if (nodeConfig.context && nodeConfig.context !== 'none') {
-            if (nodeConfig.context.startsWith('factory-')) {
-                // This is a hierarchical connection from a factory container
-                const newFactoryId = factoryIdMap.get(nodeConfig.context);
-                console.log('🌐 Looking up factory context:', nodeConfig.context, '->', newFactoryId);
-                if (newFactoryId && newStandaloneNodeId) {
-                    const key = `${newFactoryId}->${newStandaloneNodeId}`;
-                    if (!createdHierarchicalConnections.has(key)) {
-                        console.log('🌐 Creating factory-to-node connection:', newFactoryId, '->', newStandaloneNodeId);
-                        connectionActions.add(newFactoryId, newStandaloneNodeId, 'output', 'input');
-                        connections.push({ fromId: newFactoryId, toId: newStandaloneNodeId });
-                        createdHierarchicalConnections.add(key);
-                    }
+        // Connect factory standalone nodes
+        for (const nodeConfig of factoryConfig.nodes || []) {
+            await connectNode(nodeConfig);
+        }
+    }
+    
+    // Connect nodes within network-level machines
+    for (const machineConfig of networkConfig.machines || []) {
+        for (const nodeConfig of machineConfig.nodes || []) {
+            await connectNode(nodeConfig);
+        }
+    }
+    
+    // Connect network-level standalone nodes
+    for (const nodeConfig of networkConfig.nodes || []) {
+        await connectNode(nodeConfig);
+    }
+    
+    // Wait for containers to be detected
+    console.log('🌐 Step 3: Waiting for container detection...');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Step 4: Get initial container mappings (machines first)
+    console.log('🌐 Step 4: Finding created containers...');
+    let networkContainers = await getCurrentContainers();
+    const machineIdMap = new Map(); // oldMachineId -> newMachineId
+    const factoryIdMap = new Map(); // oldFactoryId -> newFactoryId
+    
+    // Find machine containers
+    for (const [oldMachineId, nodeIds] of machineNodeMap.entries()) {
+        const machineContainer = networkContainers.find(container => {
+            if (container.isFactory || container.isNetwork) return false;
+            if (!container.nodes || container.nodes.length !== nodeIds.size) return false;
+            
+            const containerNodeIds = new Set(container.nodes.map(n => n.id));
+            for (const nodeId of nodeIds) {
+                if (!containerNodeIds.has(nodeId)) return false;
+            }
+            return true;
+        });
+        
+        if (machineContainer) {
+            machineIdMap.set(oldMachineId, machineContainer.id);
+            console.log('🌐 Mapped machine:', oldMachineId, '->', machineContainer.id);
+        }
+    }
+    
+    // Step 5: Connect machines to their outputs (hierarchical connections)
+    console.log('🌐 Step 5: Connecting machines to their outputs...');
+    
+    // Helper function to find which machine/factory a node belongs to
+    function findNodeContainer(nodeId) {
+        // Check if node is in a machine
+        for (const [machineId, nodeIds] of machineNodeMap.entries()) {
+            if (nodeIds.has(nodeId)) {
+                return { type: 'machine', id: machineId };
+            }
+        }
+        // Check if node is in a factory (standalone)
+        for (const [factoryId, nodeIds] of factoryNodeMap.entries()) {
+            if (nodeIds.has(nodeId)) {
+                return { type: 'factory', id: factoryId };
+            }
+        }
+        return { type: 'node', id: nodeId }; // Standalone network node
+    }
+
+    // Helper function to process hierarchical connections
+    async function connectHierarchical(nodeConfig, targetNodeId) {
+        if (!nodeConfig.context || nodeConfig.context === 'none') return;
+        
+        // Try factory ID mapping first (handles both factory-X and actual factory IDs)
+        const factoryId = factoryIdMap.get(nodeConfig.context);
+        if (factoryId) {
+            // Check if target node belongs to a machine (factory-to-machine case)
+            const targetContainer = findNodeContainer(targetNodeId);
+            if (targetContainer.type === 'machine') {
+                const targetMachineId = machineIdMap.get(targetContainer.id);
+                if (targetMachineId) {
+                    console.log('🌐 Connecting factory to machine:', factoryId, '->', targetMachineId);
+                    await createConnection(factoryId, targetMachineId, connectionSet, createdConnections);
+                    return;
                 }
-            } else if (nodeConfig.context.startsWith('machine-')) {
-                // This is a hierarchical connection from a machine container
-                const newMachineId = machineIdMap.get(nodeConfig.context);
-                console.log('🌐 Looking up machine context:', nodeConfig.context, '->', newMachineId);
-                if (newMachineId && newStandaloneNodeId) {
-                    const key = `${newMachineId}->${newStandaloneNodeId}`;
-                    if (!createdHierarchicalConnections.has(key)) {
-                        console.log('🌐 Creating machine-to-node connection:', newMachineId, '->', newStandaloneNodeId);
-                        connectionActions.add(newMachineId, newStandaloneNodeId, 'output', 'input');
-                        connections.push({ fromId: newMachineId, toId: newStandaloneNodeId });
-                        createdHierarchicalConnections.add(key);
-                    }
+            }
+            
+            // Default: factory-to-node connection
+            console.log('🌐 Connecting factory to node:', factoryId, '->', targetNodeId);
+            await createConnection(factoryId, targetNodeId, connectionSet, createdConnections);
+            return;
+        }
+        
+        // Try machine ID mapping (handles both machine-X and actual machine IDs)
+        const machineId = machineIdMap.get(nodeConfig.context);
+        if (machineId) {
+            // Check if target node belongs to a machine (machine-to-machine case)
+            const targetContainer = findNodeContainer(targetNodeId);
+            if (targetContainer.type === 'machine') {
+                const targetMachineId = machineIdMap.get(targetContainer.id);
+                if (targetMachineId) {
+                    console.log('🌐 Connecting machine to machine:', machineId, '->', targetMachineId);
+                    await createConnection(machineId, targetMachineId, connectionSet, createdConnections);
+                    return;
                 }
-            } else {
-                // This is a standard connection from another node
-                const newContextId = networkNodeIdMap.get(nodeConfig.context);
-                console.log('🌐 Looking up node context:', nodeConfig.context, '->', newContextId);
-                if (newContextId && newStandaloneNodeId) {
-                    const key = `${newContextId}->${newStandaloneNodeId}`;
-                    if (!createdHierarchicalConnections.has(key)) {
-                        console.log('🌐 Creating node-to-node connection:', newContextId, '->', newStandaloneNodeId);
-                        connectionActions.add(newContextId, newStandaloneNodeId, 'output', 'input');
-                        connections.push({ fromId: newContextId, toId: newStandaloneNodeId });
-                        createdHierarchicalConnections.add(key);
+            }
+            
+            // Default: machine-to-node connection
+            console.log('🌐 Connecting machine to node:', machineId, '->', targetNodeId);
+            await createConnection(machineId, targetNodeId, connectionSet, createdConnections);
+            return;
+        }
+        
+        // Handle machine-to-machine and factory-to-machine connections
+        if (nodeConfig.outputs) {
+            for (const outputId of nodeConfig.outputs) {
+                if (outputId.startsWith('machine-')) {
+                    const targetMachineId = machineIdMap.get(outputId);
+                    const sourceMachineId = machineIdMap.get(nodeConfig.id) || factoryIdMap.get(nodeConfig.id);
+                    if (sourceMachineId && targetMachineId) {
+                        console.log('🌐 Connecting container to container:', sourceMachineId, '->', targetMachineId);
+                        await createConnection(sourceMachineId, targetMachineId, connectionSet, createdConnections);
+                    }
+                } else if (outputId.startsWith('factory-')) {
+                    const targetFactoryId = factoryIdMap.get(outputId);
+                    const sourceMachineId = machineIdMap.get(nodeConfig.id) || factoryIdMap.get(nodeConfig.id);
+                    if (sourceMachineId && targetFactoryId) {
+                        console.log('🌐 Connecting container to factory:', sourceMachineId, '->', targetFactoryId);
+                        await createConnection(sourceMachineId, targetFactoryId, connectionSet, createdConnections);
                     }
                 }
             }
         }
     }
-
-    // Step 5: Wait for network container to be detected and created
+    
+    // Process hierarchical connections for factory standalone nodes
+    for (const factoryConfig of networkConfig.factories || []) {
+        for (const nodeConfig of factoryConfig.nodes || []) {
+            const targetNodeId = globalNodeIdMap.get(nodeConfig.id);
+            await connectHierarchical(nodeConfig, targetNodeId);
+        }
+        
+        // IMPORTANT: Process factory-level outputs to nodes/machines
+        if (factoryConfig.outputs) {
+            const factoryId = factoryIdMap.get(factoryConfig.id);
+            if (factoryId) {
+                for (const outputId of factoryConfig.outputs) {
+                    const targetNodeId = globalNodeIdMap.get(outputId);
+                    const targetMachineId = machineIdMap.get(outputId);
+                    const targetFactoryId = factoryIdMap.get(outputId);
+                    
+                    if (targetNodeId) {
+                        console.log('🌐 Connecting factory to node (via factory.outputs):', factoryId, '->', targetNodeId);
+                        await createConnection(factoryId, targetNodeId, connectionSet, createdConnections);
+                    } else if (targetMachineId) {
+                        console.log('🌐 Connecting factory to machine (via factory.outputs):', factoryId, '->', targetMachineId);
+                        await createConnection(factoryId, targetMachineId, connectionSet, createdConnections);
+                    } else if (targetFactoryId) {
+                        console.log('🌐 Connecting factory to factory (via factory.outputs):', factoryId, '->', targetFactoryId);
+                        await createConnection(factoryId, targetFactoryId, connectionSet, createdConnections);
+                    }
+                }
+            }
+        }
+        
+        // Process factory context connections (if factory has context input)
+        if (factoryConfig.context && factoryConfig.context !== 'none') {
+            const factoryId = factoryIdMap.get(factoryConfig.id);
+            if (factoryId) {
+                if (factoryConfig.context.startsWith('factory-')) {
+                    const sourceFactoryId = factoryIdMap.get(factoryConfig.context);
+                    if (sourceFactoryId) {
+                        console.log('🌐 Connecting factory to factory (via factory.context):', sourceFactoryId, '->', factoryId);
+                        await createConnection(sourceFactoryId, factoryId, connectionSet, createdConnections);
+                    }
+                } else if (factoryConfig.context.startsWith('machine-')) {
+                    const sourceMachineId = machineIdMap.get(factoryConfig.context);
+                    if (sourceMachineId) {
+                        console.log('🌐 Connecting machine to factory (via factory.context):', sourceMachineId, '->', factoryId);
+                        await createConnection(sourceMachineId, factoryId, connectionSet, createdConnections);
+                    }
+                } else {
+                    // Node-to-factory connection
+                    const sourceNodeId = globalNodeIdMap.get(factoryConfig.context);
+                    if (sourceNodeId) {
+                        console.log('🌐 Connecting node to factory (via factory.context):', sourceNodeId, '->', factoryId);
+                        await createConnection(sourceNodeId, factoryId, connectionSet, createdConnections);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Process machine-level connections for network-level machines
+    for (const machineConfig of networkConfig.machines || []) {
+        if (machineConfig.outputs) {
+            const machineId = machineIdMap.get(machineConfig.id);
+            if (machineId) {
+                for (const outputId of machineConfig.outputs) {
+                    const targetNodeId = globalNodeIdMap.get(outputId);
+                    const targetMachineId = machineIdMap.get(outputId);
+                    const targetFactoryId = factoryIdMap.get(outputId);
+                    
+                    if (targetNodeId) {
+                        console.log('🌐 Connecting machine to node (via machine.outputs):', machineId, '->', targetNodeId);
+                        await createConnection(machineId, targetNodeId, connectionSet, createdConnections);
+                    } else if (targetMachineId) {
+                        console.log('🌐 Connecting machine to machine (via machine.outputs):', machineId, '->', targetMachineId);
+                        await createConnection(machineId, targetMachineId, connectionSet, createdConnections);
+                    } else if (targetFactoryId) {
+                        console.log('🌐 Connecting machine to factory (via machine.outputs):', machineId, '->', targetFactoryId);
+                        await createConnection(machineId, targetFactoryId, connectionSet, createdConnections);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Wait for factory containers to be created by machine connections
+    console.log('🌐 Step 5.5: Waiting for factory containers to be created...');
+    await new Promise(resolve => setTimeout(resolve, 150));
+    
+    // Re-scan for factory containers now that they should exist
+    networkContainers = await getCurrentContainers();
+    
+    // Find factory containers
+    console.log('🌐 DEBUG: Looking for factories. factoryNodeMap entries:', Array.from(factoryNodeMap.entries()));
+    console.log('🌐 DEBUG: Available containers:', networkContainers.map(c => ({ id: c.id, isFactory: c.isFactory, nodeIds: c.nodeIds })));
+    
+    for (const [oldFactoryId, nodeIds] of factoryNodeMap.entries()) {
+        console.log('🌐 DEBUG: Looking for factory', oldFactoryId, 'with nodes:', Array.from(nodeIds));
+        
+        const factoryContainer = networkContainers.find(container => {
+            console.log('🌐 DEBUG: Checking container:', container.id, 'isFactory:', container.isFactory, 'nodeIds:', container.nodeIds);
+            if (!container.isFactory || container.isNetwork) return false;
+            if (!container.nodeIds || container.nodeIds.length !== nodeIds.size) {
+                console.log('🌐 DEBUG: Size mismatch:', container.nodeIds?.length, 'vs', nodeIds.size);
+                return false;
+            }
+            
+            const containerNodeIds = new Set(container.nodeIds);
+            for (const nodeId of nodeIds) {
+                if (!containerNodeIds.has(nodeId)) {
+                    console.log('🌐 DEBUG: Missing nodeId:', nodeId);
+                    return false;
+                }
+            }
+            return true;
+        });
+        
+        if (factoryContainer) {
+            factoryIdMap.set(oldFactoryId, factoryContainer.id);
+            console.log('🌐 Mapped factory:', oldFactoryId, '->', factoryContainer.id);
+        } else {
+            console.log('🌐 DEBUG: No matching factory container found for', oldFactoryId);
+        }
+    }
+    
+    // Step 6: Now process hierarchical connections at all levels
+    console.log('🌐 Step 6: Processing hierarchical connections...');
+    
+    // Process factory standalone nodes
+    for (const factoryConfig of networkConfig.factories || []) {
+        for (const nodeConfig of factoryConfig.nodes || []) {
+            const targetNodeId = globalNodeIdMap.get(nodeConfig.id);
+            await connectHierarchical(nodeConfig, targetNodeId);
+        }
+    }
+    
+    // Process network-level machine nodes (this was missing!)
+    for (const machineConfig of networkConfig.machines || []) {
+        for (const nodeConfig of machineConfig.nodes || []) {
+            const targetNodeId = globalNodeIdMap.get(nodeConfig.id);
+            await connectHierarchical(nodeConfig, targetNodeId);
+        }
+    }
+    
+    // Process network standalone nodes
+    for (const nodeConfig of networkConfig.nodes || []) {
+        const targetNodeId = globalNodeIdMap.get(nodeConfig.id);
+        await connectHierarchical(nodeConfig, targetNodeId);
+    }
+    
+    // Wait for final network container detection
     await new Promise(resolve => setTimeout(resolve, 200));
     
-    console.log('🌐 Successfully created network with', nodes.length, 'nodes and', connections.length, 'connections');
-    return { nodes, connections, factoryIdMap, machineIdMap };
+    console.log('🌐 Successfully created network with', allNodes.length, 'nodes and', createdConnections.length, 'connections');
+    return { nodes: allNodes, connections: createdConnections, factoryIdMap, machineIdMap };
 }
 
 // Internal clipboard for configs (fallback when system clipboard fails)
