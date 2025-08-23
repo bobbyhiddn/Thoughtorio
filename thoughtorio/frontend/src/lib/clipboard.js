@@ -534,14 +534,32 @@ export async function copyNetworkConfig(container, nodeDataMap) {
             };
         });
 
-        // Add standalone nodes at network level (not in any factory)
+        // Add machines directly in the network (from factory-to-machine connections)
+        const networkMachines = (container.machines || []).map(machine => {
+            const elegantNodes = (machine.nodes || []).map(node => {
+                const nodeData = nodeDataMap.get(node.id);
+                if (!nodeData) return null;
+                return {
+                    id: node.id,
+                    type: nodeData.data.node_type,
+                    content: nodeData.data.content || "",
+                    context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
+                };
+            }).filter(Boolean);
+            return { id: machine.id, nodes: elegantNodes };
+        });
+
+        // Add standalone nodes at network level (not in any factory or machine)
         const networkStandaloneNodes = (container.nodeIds || [])
             .filter(nodeId => {
-                // Find nodes that are not in any factory
+                // Find nodes that are not in any factory or network-level machine
                 const isInFactory = container.factories && container.factories.some(factory => 
                     factory.nodeIds && factory.nodeIds.includes(nodeId)
                 );
-                return !isInFactory;
+                const isInNetworkMachine = container.machines && container.machines.some(machine =>
+                    machine.nodes && machine.nodes.some(node => node.id === nodeId)
+                );
+                return !isInFactory && !isInNetworkMachine;
             })
             .map(nodeId => {
                 const nodeData = nodeDataMap.get(nodeId);
@@ -558,6 +576,7 @@ export async function copyNetworkConfig(container, nodeDataMap) {
             network: {
                 id: container.id,
                 factories: elegantFactories,
+                ...(networkMachines.length > 0 && { machines: networkMachines }),
                 ...(networkStandaloneNodes.length > 0 && { nodes: networkStandaloneNodes })
             }
         };
@@ -621,13 +640,38 @@ export async function copyNetworkMetadata(container, nodeDataMap) {
             };
         });
 
+        // Network-level machines (from factory-to-machine connections)
+        const networkMachines = (container.machines || []).map(machine => {
+            return {
+                id: machine.id,
+                nodeCount: (machine.nodes || []).length,
+                nodeTypes: [...new Set((machine.nodes || []).map(node => {
+                    const nodeData = nodeDataMap.get(node.id);
+                    return nodeData ? nodeData.data.node_type : 'unknown';
+                }))],
+                nodes: (machine.nodes || []).map(node => {
+                    const nodeData = nodeDataMap.get(node.id);
+                    return nodeData ? {
+                        id: node.id,
+                        type: nodeData.data.node_type,
+                        title: nodeData.data.metadata.title,
+                        version: nodeData.data.metadata.version
+                    } : { id: node.id, type: 'unknown' };
+                }),
+                bounds: machine.bounds
+            };
+        });
+
         // Network-level standalone nodes
         const networkStandaloneNodes = (container.nodeIds || [])
             .filter(nodeId => {
                 const isInFactory = container.factories && container.factories.some(factory => 
                     factory.nodeIds && factory.nodeIds.includes(nodeId)
                 );
-                return !isInFactory;
+                const isInNetworkMachine = container.machines && container.machines.some(machine =>
+                    machine.nodes && machine.nodes.some(node => node.id === nodeId)
+                );
+                return !isInFactory && !isInNetworkMachine;
             })
             .map(nodeId => {
                 const nodeData = nodeDataMap.get(nodeId);
@@ -650,6 +694,9 @@ export async function copyNetworkMetadata(container, nodeDataMap) {
         allFactories.forEach(factory => {
             (factory.nodeIds || []).forEach(nodeId => allNodeIds.add(nodeId));
         });
+        networkMachines.forEach(machine => {
+            (machine.nodes || []).forEach(node => allNodeIds.add(node.id));
+        });
         (container.nodeIds || []).forEach(nodeId => allNodeIds.add(nodeId));
 
         const config = {
@@ -659,16 +706,18 @@ export async function copyNetworkMetadata(container, nodeDataMap) {
             network: { 
                 id: container.id, 
                 factoryCount: allFactories.length,
+                machineCount: networkMachines.length,
                 standaloneNodeCount: networkStandaloneNodes.length,
                 totalNodeCount: allNodeIds.size,
                 bounds: container.bounds
             },
             factories: factoryConfigs,
+            machines: networkMachines,
             networkStandaloneNodes: networkStandaloneNodes,
             connections: container.connections || [],
             metadata: {
                 total_factories: allFactories.length,
-                total_machines: allFactories.reduce((sum, f) => sum + (f.machines || []).length, 0),
+                total_machines: allFactories.reduce((sum, f) => sum + (f.machines || []).length, 0) + networkMachines.length,
                 total_nodes: allNodeIds.size,
                 connection_count: (container.connections || []).length,
                 hierarchy_depth: 3, // Network -> Factory -> Machine -> Node
@@ -684,6 +733,7 @@ export async function copyNetworkMetadata(container, nodeDataMap) {
                         }).length;
                         return standaloneCount > 0;
                     }).length,
+                    network_level_machines: networkMachines.length,
                     network_standalone_nodes: networkStandaloneNodes.length
                 }
             }

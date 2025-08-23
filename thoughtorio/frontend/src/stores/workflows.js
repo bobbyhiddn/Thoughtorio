@@ -340,12 +340,13 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
         );
         
         if (!isInMachine && !isInFactory) {
-            // Standalone node - add to network
+            // Case 1: Standalone node - add to network
             if (!networkAdjacency.has(targetEntity)) {
                 networkAdjacency.set(targetEntity, new Set());
             }
             networkAdjacency.get(targetEntity).add(conn.fromId);
             networkAdjacency.get(conn.fromId).add(targetEntity);
+            console.log(`Factory-to-standalone-node connection: ${conn.fromId} -> ${targetEntity}`);
         } else if (isInFactory) {
             // Case 2: Target is a node in another factory - connect the factories
             const targetFactory = factoryContainers.find(factory => 
@@ -364,6 +365,21 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
                 networkAdjacency.get(targetEntity).add(conn.fromId);
                 networkAdjacency.get(conn.fromId).add(targetEntity);
                 console.log(`Factory-to-factory connection: ${conn.fromId} -> ${targetEntity}`);
+            }
+        } else if (isInMachine && !isInFactory) {
+            // Case 3: Target is a node in a machine (not in a factory) - connect factory to machine
+            const targetMachine = machineContainers.find(machine => 
+                machine.nodes && machine.nodes.some(node => node.id === conn.toId)
+            );
+            
+            if (targetMachine) {
+                targetEntity = targetMachine.id;
+                if (!networkAdjacency.has(targetEntity)) {
+                    networkAdjacency.set(targetEntity, new Set());
+                }
+                networkAdjacency.get(targetEntity).add(conn.fromId);
+                networkAdjacency.get(conn.fromId).add(targetEntity);
+                console.log(`Factory-to-machine connection: ${conn.fromId} -> ${targetEntity}`);
             }
         }
     });
@@ -394,17 +410,20 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
             
             // Networks require at least one factory and either:
             // 1) A standalone node, OR 
-            // 2) Another factory (factory-to-factory connection)
+            // 2) Another factory (factory-to-factory connection), OR
+            // 3) A machine (factory-to-machine connection)
             const factories = Array.from(networkComponent.entities).filter(id => id.startsWith('factory-'));
+            const machines = Array.from(networkComponent.entities).filter(id => id.startsWith('machine-'));
             const standaloneNodes = Array.from(networkComponent.entities).filter(id => !id.startsWith('factory-') && !id.startsWith('machine-'));
             
             const hasMultipleFactories = factories.length >= 2;
             const hasFactoryAndStandaloneNode = factories.length >= 1 && standaloneNodes.length >= 1;
+            const hasFactoryAndMachine = factories.length >= 1 && machines.length >= 1;
             
-            if ((hasMultipleFactories || hasFactoryAndStandaloneNode) && networkComponent.entities.size > 1) {
+            if ((hasMultipleFactories || hasFactoryAndStandaloneNode || hasFactoryAndMachine) && networkComponent.entities.size > 1) {
                 console.log('Creating network with entities:', Array.from(networkComponent.entities));
                 // Create network container
-                const network = createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList, existingContainers);
+                const network = createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList, machineContainers, existingContainers);
                 if (network) {
                     console.log('Successfully created network container:', network);
                     networkComponents.push(network);
@@ -486,18 +505,19 @@ function createFactoryContainer(factoryComponent, machineContainers, connectionL
 /**
  * Creates a network container for factory-to-node hierarchies
  */
-function createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList, existingContainers = []) {
+function createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList, machineContainers, existingContainers = []) {
     const { entities } = networkComponent;
     
-    // Get all factories and standalone nodes in this network
+    // Get all factories, machines, and standalone nodes in this network
     const factories = factoryContainers.filter(f => entities.has(f.id));
+    const machines = machineContainers.filter(m => entities.has(m.id));
     const nodeIds = Array.from(entities).filter(id => !id.startsWith('factory-') && !id.startsWith('machine-'));
     
     if (factories.length === 0) return null;
     
-    console.log(`Creating network with ${factories.length} factories and ${nodeIds.length} standalone nodes`);
+    console.log(`Creating network with ${factories.length} factories, ${machines.length} machines, and ${nodeIds.length} standalone nodes`);
     
-    // Calculate bounding box that encompasses all factories and nodes
+    // Calculate bounding box that encompasses all factories, machines, and nodes
     const padding = 40; // Larger padding for networks
     const playButtonSpace = 50; // Space above container for play button
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -508,6 +528,14 @@ function createNetworkContainer(networkComponent, factoryContainers, connectionL
         minY = Math.min(minY, factory.bounds.y);
         maxX = Math.max(maxX, factory.bounds.x + factory.bounds.width);
         maxY = Math.max(maxY, factory.bounds.y + factory.bounds.height);
+    });
+    
+    // Include machine bounds
+    machines.forEach(machine => {
+        minX = Math.min(minX, machine.bounds.x);
+        minY = Math.min(minY, machine.bounds.y);
+        maxX = Math.max(maxX, machine.bounds.x + machine.bounds.width);
+        maxY = Math.max(maxY, machine.bounds.y + machine.bounds.height);
     });
     
     // Include individual node positions (standalone nodes connected to factories)
@@ -536,6 +564,7 @@ function createNetworkContainer(networkComponent, factoryContainers, connectionL
     return {
         id: `network-${networkNumber}`,
         factories: factories,
+        machines: machines,
         nodeIds: nodeIds,
         connections: networkConnections,
         bounds: {
@@ -627,7 +656,7 @@ async function executeContainer(container) {
     let children, connections;
     if (container.isNetwork) {
         const standaloneNodes = (container.nodeIds || []).map(id => get(nodes).find(n => n.id === id)).filter(Boolean);
-        children = [...(container.factories || []), ...standaloneNodes];
+        children = [...(container.factories || []), ...(container.machines || []), ...standaloneNodes];
         connections = container.connections;
     } else if (container.isFactory) {
         const standaloneNodes = (container.nodeIds || []).map(id => get(nodes).find(n => n.id === id)).filter(Boolean);
