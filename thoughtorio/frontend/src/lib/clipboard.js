@@ -5,6 +5,468 @@
 
 import { stringify as yamlStringify, parse as yamlParse } from 'yaml';
 
+// Helper function to get current workflow containers
+async function getCurrentContainers() {
+    const { workflowContainers } = await import('../stores/workflows.js');
+    const { get } = await import('svelte/store');
+    return get(workflowContainers);
+}
+
+// Helper function to get node coordinates
+function getNodeCoordinates(nodeId, nodesList) {
+    if (!nodesList) return { x: 0, y: 0 };
+    const node = nodesList.find(n => n.id === nodeId);
+    return node ? { x: node.x, y: node.y } : { x: 0, y: 0 };
+}
+
+// Helper function to create elegant node config with coordinates
+function createElegantNodeConfig(node, nodeData, nodesList, connections = [], containerContext = null) {
+    const coords = node ? { x: node.x, y: node.y } : getNodeCoordinates(node?.id, nodesList);
+    
+    const elegantNode = {
+        id: node?.id,
+        type: nodeData.data.node_type,
+        content: nodeData.data.content || "",
+        x: coords.x,
+        y: coords.y
+    };
+    
+    // Add context/inputs - use nodeData first, then check connections
+    if (nodeData.data.inputs && nodeData.data.inputs.length > 0) {
+        if (nodeData.data.inputs.length === 1) {
+            elegantNode.context = nodeData.data.inputs[0].source_id;
+        } else {
+            elegantNode.inputs = nodeData.data.inputs.map(input => input.source_id);
+        }
+    } else {
+        // If no nodeData inputs, check connections for cross-component connections
+        const incomingConnections = connections.filter(conn => conn.toId === node?.id);
+        if (incomingConnections.length === 1) {
+            elegantNode.context = incomingConnections[0].fromId;
+        } else if (incomingConnections.length > 1) {
+            elegantNode.inputs = incomingConnections.map(conn => conn.fromId);
+        } else {
+            elegantNode.context = "none";
+        }
+    }
+    
+    // Add outputs from connections
+    if (connections.length > 0) {
+        const outgoingConnections = connections.filter(conn => conn.fromId === node?.id);
+        if (outgoingConnections.length > 0) {
+            elegantNode.outputs = outgoingConnections.map(conn => conn.toId);
+        }
+    }
+    
+    return elegantNode;
+}
+
+// REPLACE THE OLD FUNCTIONS WITH THIS ENTIRE BLOCK
+
+// Helper functions to create nodes/containers from configs
+async function createNodeFromConfig(nodeConfig, offsetX = 0, offsetY = 0) {
+    const { nodeActions } = await import('../stores/nodes.js');
+    
+    // Use reasonable default coordinates if config coordinates are extreme or missing
+    let x = nodeConfig.x;
+    let y = nodeConfig.y;
+    
+    // Check for extreme, invalid, or missing coordinates
+    if (x == null || y == null || Math.abs(x) > 10000 || Math.abs(y) > 10000 || isNaN(x) || isNaN(y)) {
+        console.log(`⚠️ Invalid/extreme coordinates detected (${x}, ${y}), using offset only`);
+        x = 0;
+        y = 0;
+    }
+    
+    const finalX = x + offsetX;
+    const finalY = y + offsetY;
+    
+    console.log(`🔧 Creating node: type="${nodeConfig.type}", content="${nodeConfig.content}", x=${finalX}, y=${finalY}`);
+    
+    const node = nodeActions.add(nodeConfig.type, finalX, finalY, nodeConfig.content || '');
+    
+    console.log(`✅ Created node: id="${node.id}", type="${node.type}", title="${node.title}"`);
+    
+    return { node };
+}
+
+async function createMachineFromConfig(machineConfig, offsetX = 0, offsetY = 0) {
+    const nodes = [];
+    const connections = [];
+    
+    // Create all nodes first, building a map to translate old IDs to new IDs
+    const nodeIdMap = new Map(); // oldId -> newId mapping
+    for (const nodeConfig of machineConfig.nodes || []) {
+        const { node } = await createNodeFromConfig(nodeConfig, offsetX, offsetY);
+        nodes.push(node);
+        nodeIdMap.set(nodeConfig.id, node.id);
+    }
+    
+    // Create connections using the new IDs, avoiding duplicates
+    const { connectionActions } = await import('../stores/nodes.js');
+    const createdConnectionsSet = new Set();
+
+    for (const nodeConfig of machineConfig.nodes || []) {
+        const newFromId = nodeIdMap.get(nodeConfig.id);
+
+        // Handle 'outputs' array
+        if (nodeConfig.outputs && Array.isArray(nodeConfig.outputs)) {
+            for (const targetId of nodeConfig.outputs) {
+                const newToId = nodeIdMap.get(targetId);
+                if (newFromId && newToId) {
+                    const connectionKey = `${newFromId}->${newToId}`;
+                    if (!createdConnectionsSet.has(connectionKey)) {
+                        const connection = connectionActions.add(newFromId, newToId, 'output', 'input');
+                        connections.push(connection);
+                        createdConnectionsSet.add(connectionKey);
+                    }
+                }
+            }
+        }
+        
+        // Handle 'context' (single input)
+        if (nodeConfig.context && nodeConfig.context !== 'none') {
+            const newToId = nodeIdMap.get(nodeConfig.id);
+            const newFromId = nodeIdMap.get(nodeConfig.context);
+            if (newFromId && newToId) {
+                const connectionKey = `${newFromId}->${newToId}`;
+                if (!createdConnectionsSet.has(connectionKey)) {
+                    const connection = connectionActions.add(newFromId, newToId, 'output', 'input');
+                    connections.push(connection);
+                    createdConnectionsSet.add(connectionKey);
+                }
+            }
+        }
+        
+        // Handle 'inputs' array (multiple inputs)
+        if (nodeConfig.inputs && Array.isArray(nodeConfig.inputs)) {
+            for (const sourceId of nodeConfig.inputs) {
+                const newToId = nodeIdMap.get(nodeConfig.id);
+                const newFromId = nodeIdMap.get(sourceId);
+                if (newFromId && newToId) {
+                    const connectionKey = `${newFromId}->${newToId}`;
+                    if (!createdConnectionsSet.has(connectionKey)) {
+                        const connection = connectionActions.add(newFromId, newToId, 'output', 'input');
+                        connections.push(connection);
+                        createdConnectionsSet.add(connectionKey);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Wait for container detection to get the actual machine ID
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
+    const machineContainers = await getCurrentContainers();
+    
+    const machineIdMap = new Map(); // oldMachineId -> newMachineId
+    
+    // Find the machine container that was created for these nodes
+    const machineContainer = machineContainers.find(c => 
+        !c.isFactory && !c.isNetwork && c.nodes &&
+        c.nodes.some(n => nodes.some(createdNode => createdNode.id === n.id))
+    );
+    if (machineContainer && machineConfig.id) {
+        machineIdMap.set(machineConfig.id, machineContainer.id);
+    }
+    
+    return { nodes, connections, nodeIdMap, machineIdMap };
+}
+
+async function createFactoryFromConfig(factoryConfig, offsetX = 0, offsetY = 0) {
+    const allCreatedNodes = [];
+    const allCreatedConnections = [];
+    const { connectionActions } = await import('../stores/nodes.js');
+    
+    // Part 1: Create nodes for all machines and their internal connections.
+    const oldMachineToNewNodeIds = new Map();
+    const allMachineNodeIdMap = new Map(); // Translates all old node IDs from within machines to their new IDs.
+    
+    for (const machineConfig of factoryConfig.machines || []) {
+        const result = await createMachineFromConfig(machineConfig, offsetX, offsetY);
+        allCreatedNodes.push(...result.nodes);
+        allCreatedConnections.push(...result.connections);
+        
+        // Store the set of new node IDs for identifying the container later.
+        const newNodeIds = new Set(result.nodes.map(n => n.id));
+        oldMachineToNewNodeIds.set(machineConfig.id, newNodeIds);
+
+        // Add this machine's ID translations to the factory-wide map.
+        for (const [oldId, newId] of result.nodeIdMap.entries()) {
+            allMachineNodeIdMap.set(oldId, newId);
+        }
+    }
+
+    // Part 2: Create standalone nodes for the factory.
+    const standaloneNodeIdMap = new Map();
+    for (const nodeConfig of factoryConfig.nodes || []) {
+        const { node } = await createNodeFromConfig(nodeConfig, offsetX, offsetY);
+        allCreatedNodes.push(node);
+        standaloneNodeIdMap.set(nodeConfig.id, node.id);
+    }
+    
+    // Part 3: CRITICAL - Wait for Svelte's reactivity to create the new machine containers.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
+    // Now, find the newly created machine containers.
+    const currentContainers = await getCurrentContainers();
+    const oldMachineToNewMachineId = new Map(); // Translates old machine IDs to new machine container IDs.
+
+    for (const [oldMachineId, newNodeIds] of oldMachineToNewNodeIds.entries()) {
+        const foundContainer = currentContainers.find(container => {
+            if (!container.nodes || container.isFactory || container.isNetwork) return false;
+            const containerNodeIds = new Set(container.nodes.map(n => n.id));
+            if (containerNodeIds.size !== newNodeIds.size) return false;
+            // Check if all new node IDs are present in this container.
+            for (const id of newNodeIds) {
+                if (!containerNodeIds.has(id)) return false;
+            }
+            return true;
+        });
+
+        if (foundContainer) {
+            oldMachineToNewMachineId.set(oldMachineId, foundContainer.id);
+        } else {
+            console.warn(`Could not find new machine container for old machine ${oldMachineId}`);
+        }
+    }
+    
+    // Part 4: Create the final factory-level (hierarchical) connections.
+    const createdHierarchicalConnections = new Set();
+    
+    // Connections *from* nodes inside machines *to* standalone nodes.
+    for (const machineConfig of factoryConfig.machines || []) {
+        for (const nodeConfig of machineConfig.nodes || []) {
+            const newFromId = allMachineNodeIdMap.get(nodeConfig.id);
+            if (nodeConfig.outputs && Array.isArray(nodeConfig.outputs)) {
+                for (const targetId of nodeConfig.outputs) {
+                    const newToId = standaloneNodeIdMap.get(targetId);
+                    if (newFromId && newToId) {
+                        const key = `${newFromId}->${newToId}`;
+                        if (!createdHierarchicalConnections.has(key)) {
+                            connectionActions.add(newFromId, newToId, 'output', 'input');
+                            createdHierarchicalConnections.add(key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Connections involving standalone nodes (source or target).
+    for (const nodeConfig of factoryConfig.nodes || []) {
+        const newStandaloneNodeId = standaloneNodeIdMap.get(nodeConfig.id);
+
+        // Case: Standalone -> machine node OR Standalone -> standalone node
+        if (nodeConfig.outputs && Array.isArray(nodeConfig.outputs)) {
+            for (const targetId of nodeConfig.outputs) {
+                const newTargetId = allMachineNodeIdMap.get(targetId) || standaloneNodeIdMap.get(targetId);
+                if (newStandaloneNodeId && newTargetId) {
+                    const key = `${newStandaloneNodeId}->${newTargetId}`;
+                    if (!createdHierarchicalConnections.has(key)) {
+                        connectionActions.add(newStandaloneNodeId, newTargetId, 'output', 'input');
+                        createdHierarchicalConnections.add(key);
+                    }
+                }
+            }
+        }
+
+        // Case: machine (container) OR node -> this standalone node
+        if (nodeConfig.context && nodeConfig.context !== 'none') {
+            if (nodeConfig.context.startsWith('machine-')) {
+                // This is a hierarchical connection from a machine container.
+                const newMachineId = oldMachineToNewMachineId.get(nodeConfig.context);
+                if (newMachineId && newStandaloneNodeId) {
+                    const key = `${newMachineId}->${newStandaloneNodeId}`;
+                    if (!createdHierarchicalConnections.has(key)) {
+                        connectionActions.add(newMachineId, newStandaloneNodeId, 'output', 'input');
+                        createdHierarchicalConnections.add(key);
+                    }
+                }
+            } else {
+                // This is a standard connection from another node.
+                const newContextId = allMachineNodeIdMap.get(nodeConfig.context) || standaloneNodeIdMap.get(nodeConfig.context);
+                if (newContextId && newStandaloneNodeId) {
+                    const key = `${newContextId}->${newStandaloneNodeId}`;
+                    if (!createdHierarchicalConnections.has(key)) {
+                        connectionActions.add(newContextId, newStandaloneNodeId, 'output', 'input');
+                        createdHierarchicalConnections.add(key);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Wait for container detection to get the actual factory and machine IDs
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const factoryContainers = await getCurrentContainers();
+    
+    const factoryIdMap = new Map(); // oldFactoryId -> newFactoryId  
+    const machineIdMap = new Map(); // oldMachineId -> newMachineId
+    
+    // Find the factory container that was created
+    const createdFactory = factoryContainers.find(c => c.isFactory);
+    if (createdFactory) {
+        factoryIdMap.set(factoryConfig.id, createdFactory.id);
+    }
+    
+    // Find machine containers for each original machine
+    for (const [oldMachineId, newNodeIds] of oldMachineToNewNodeIds.entries()) {
+        const machineContainer = factoryContainers.find(c => 
+            !c.isFactory && !c.isNetwork && c.nodes &&
+            c.nodes.some(n => newNodeIds.has(n.id))
+        );
+        if (machineContainer) {
+            machineIdMap.set(oldMachineId, machineContainer.id);
+        }
+    }
+    
+    return { 
+        nodes: allCreatedNodes, 
+        connections: allCreatedConnections, 
+        factoryIdMap,
+        machineIdMap,
+        nodeIdMap: new Map([...allMachineNodeIdMap, ...standaloneNodeIdMap])
+    };
+}
+
+async function createNetworkFromConfig(networkConfig, offsetX = 0, offsetY = 0) {
+    console.log('🌐 Creating network from config:', networkConfig);
+
+    const nodes = [];
+    const connections = [];
+    const factoryIdMap = new Map(); // oldFactoryId -> newFactoryId
+    const machineIdMap = new Map(); // oldMachineId -> newMachineId
+
+    // Step 1: Create all constituent factories and machines
+    for (const factoryConfig of networkConfig.factories || []) {
+        const result = await createFactoryFromConfig(factoryConfig, offsetX, offsetY);
+        nodes.push(...result.nodes);
+        connections.push(...result.connections);
+        
+        // Build factory ID mapping if the result includes factory mapping
+        if (result.factoryIdMap) {
+            for (const [oldId, newId] of result.factoryIdMap.entries()) {
+                factoryIdMap.set(oldId, newId);
+            }
+        }
+        if (result.machineIdMap) {
+            for (const [oldId, newId] of result.machineIdMap.entries()) {
+                machineIdMap.set(oldId, newId);
+            }
+        }
+    }
+
+    for (const machineConfig of networkConfig.machines || []) {
+        const result = await createMachineFromConfig(machineConfig, offsetX, offsetY);
+        nodes.push(...result.nodes);
+        connections.push(...result.connections);
+        
+        if (result.machineIdMap) {
+            for (const [oldId, newId] of result.machineIdMap.entries()) {
+                machineIdMap.set(oldId, newId);
+            }
+        }
+    }
+
+    for (const nodeConfig of networkConfig.nodes || []) {
+        const { node } = await createNodeFromConfig(nodeConfig, offsetX, offsetY);
+        nodes.push(node);
+    }
+
+    // Step 2: Wait for workflow containers to be detected
+    console.log('🌐 Waiting for factory and machine containers to be created...');
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Step 3: Find the newly created factory and machine containers
+    const networkContainers = await getCurrentContainers();
+    
+    const createdFactories = networkContainers.filter(c => c.isFactory);
+    const createdMachines = networkContainers.filter(c => !c.isFactory && !c.isNetwork);
+    
+    console.log('🌐 Found containers after network creation:', {
+        factories: createdFactories.map(f => f.id),
+        machines: createdMachines.map(m => m.id)
+    });
+
+    // Step 4: Create network-level connections using the same pattern as factory connections
+    const { connectionActions } = await import('../stores/nodes.js');
+    const createdHierarchicalConnections = new Set();
+    
+    // Build node ID map for network-level standalone nodes
+    const networkNodeIdMap = new Map();
+    for (const nodeConfig of networkConfig.nodes || []) {
+        const createdNode = nodes.find(n => 
+            Math.abs(n.x - (nodeConfig.x + offsetX)) < 1 && 
+            Math.abs(n.y - (nodeConfig.y + offsetY)) < 1 &&
+            n.type === nodeConfig.type
+        );
+        if (createdNode) {
+            networkNodeIdMap.set(nodeConfig.id, createdNode.id);
+            console.log('🌐 Mapped network node:', nodeConfig.id, '->', createdNode.id);
+        }
+    }
+    
+    console.log('🌐 Processing', (networkConfig.nodes || []).length, 'network standalone nodes for connections');
+    
+    // Create connections for network standalone nodes - copying factory pattern exactly
+    for (const nodeConfig of networkConfig.nodes || []) {
+        const newStandaloneNodeId = networkNodeIdMap.get(nodeConfig.id);
+        
+        // Network-level hierarchical connection: factory -> standalone node
+        if (nodeConfig.context && nodeConfig.context !== 'none') {
+            if (nodeConfig.context.startsWith('factory-')) {
+                // This is a hierarchical connection from a factory container
+                const newFactoryId = factoryIdMap.get(nodeConfig.context);
+                console.log('🌐 Looking up factory context:', nodeConfig.context, '->', newFactoryId);
+                if (newFactoryId && newStandaloneNodeId) {
+                    const key = `${newFactoryId}->${newStandaloneNodeId}`;
+                    if (!createdHierarchicalConnections.has(key)) {
+                        console.log('🌐 Creating factory-to-node connection:', newFactoryId, '->', newStandaloneNodeId);
+                        connectionActions.add(newFactoryId, newStandaloneNodeId, 'output', 'input');
+                        connections.push({ fromId: newFactoryId, toId: newStandaloneNodeId });
+                        createdHierarchicalConnections.add(key);
+                    }
+                }
+            } else if (nodeConfig.context.startsWith('machine-')) {
+                // This is a hierarchical connection from a machine container
+                const newMachineId = machineIdMap.get(nodeConfig.context);
+                console.log('🌐 Looking up machine context:', nodeConfig.context, '->', newMachineId);
+                if (newMachineId && newStandaloneNodeId) {
+                    const key = `${newMachineId}->${newStandaloneNodeId}`;
+                    if (!createdHierarchicalConnections.has(key)) {
+                        console.log('🌐 Creating machine-to-node connection:', newMachineId, '->', newStandaloneNodeId);
+                        connectionActions.add(newMachineId, newStandaloneNodeId, 'output', 'input');
+                        connections.push({ fromId: newMachineId, toId: newStandaloneNodeId });
+                        createdHierarchicalConnections.add(key);
+                    }
+                }
+            } else {
+                // This is a standard connection from another node
+                const newContextId = networkNodeIdMap.get(nodeConfig.context);
+                console.log('🌐 Looking up node context:', nodeConfig.context, '->', newContextId);
+                if (newContextId && newStandaloneNodeId) {
+                    const key = `${newContextId}->${newStandaloneNodeId}`;
+                    if (!createdHierarchicalConnections.has(key)) {
+                        console.log('🌐 Creating node-to-node connection:', newContextId, '->', newStandaloneNodeId);
+                        connectionActions.add(newContextId, newStandaloneNodeId, 'output', 'input');
+                        connections.push({ fromId: newContextId, toId: newStandaloneNodeId });
+                        createdHierarchicalConnections.add(key);
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 5: Wait for network container to be detected and created
+    await new Promise(resolve => setTimeout(resolve, 200));
+    
+    console.log('🌐 Successfully created network with', nodes.length, 'nodes and', connections.length, 'connections');
+    return { nodes, connections, factoryIdMap, machineIdMap };
+}
+
 // Internal clipboard for configs (fallback when system clipboard fails)
 let internalClipboard = {
     type: null,
@@ -202,7 +664,7 @@ export async function copyNodeMetadata(nodeData) {
  * @param {string} visualContent - Visual content from the node (optional)
  * @returns {Promise<{success: boolean, elegantConfig?: string, error?: string}>}
  */
-export async function copyNodeConfig(nodeData, visualContent = null) {
+export async function copyNodeConfig(nodeData, visualContent = null, nodePosition = null) {
     try {
         const elegantConfig = nodeData.toElegantConfig(visualContent);
         console.log('Generated elegant config:', elegantConfig);
@@ -241,7 +703,7 @@ export async function copyNodeConfig(nodeData, visualContent = null) {
 /**
  * Copy machine configuration (concise format)
  */
-export async function copyMachineConfig(container, nodeDataMap) {
+export async function copyMachineConfig(container, nodeDataMap, nodesList = null) {
     if (!container || !nodeDataMap) {
         return { success: false, error: 'No container or node data provided' };
     }
@@ -255,32 +717,9 @@ export async function copyMachineConfig(container, nodeDataMap) {
                 const elegantNodes = (machine.nodes || []).map(node => {
                     const nodeData = nodeDataMap.get(node.id);
                     if (!nodeData) return null;
-                    
-                    const elegantNode = {
-                        id: node.id,
-                        type: nodeData.data.node_type,
-                        content: nodeData.data.content || ""
-                    };
-                    
-                    // Add context/inputs
-                    if (nodeData.data.inputs && nodeData.data.inputs.length > 0) {
-                        if (nodeData.data.inputs.length === 1) {
-                            elegantNode.context = nodeData.data.inputs[0].source_id;
-                        } else {
-                            elegantNode.inputs = nodeData.data.inputs.map(input => input.source_id);
-                        }
-                    } else {
-                        elegantNode.context = "none";
-                    }
-                    
-                    // Add outputs from machine's internal connections
-                    const machineConnections = machine.connections || [];
-                    const outgoingConnections = machineConnections.filter(conn => conn.fromId === node.id);
-                    if (outgoingConnections.length > 0) {
-                        elegantNode.outputs = outgoingConnections.map(conn => conn.toId);
-                    }
-                    
-                    return elegantNode;
+                    // Use both machine and factory-level connections to capture cross-component connections
+                    const allConnections = [...(machine.connections || []), ...(container.connections || [])];
+                    return createElegantNodeConfig(node, nodeData, nodesList, allConnections);
                 }).filter(Boolean);
                 
                 return { id: machine.id, nodes: elegantNodes };
@@ -298,12 +737,14 @@ export async function copyMachineConfig(container, nodeDataMap) {
                 .map(nodeId => {
                     const nodeData = nodeDataMap.get(nodeId);
                     if (!nodeData) return null;
-                    return {
-                        id: nodeId,
-                        type: nodeData.data.node_type,
-                        content: nodeData.data.content || "",
-                        context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
-                    };
+                    // Find the actual node object with coordinates from nodesList
+                    const nodeWithCoords = nodesList ? nodesList.find(n => n.id === nodeId) : null;
+                    return createElegantNodeConfig(
+                        nodeWithCoords || { id: nodeId }, // Pass full node with coordinates if available
+                        nodeData, 
+                        nodesList, 
+                        container.connections || []
+                    );
                 }).filter(Boolean);
             
             // Create factory config
@@ -319,32 +760,7 @@ export async function copyMachineConfig(container, nodeDataMap) {
             const elegantNodes = (container.nodes || []).map(node => {
                 const nodeData = nodeDataMap.get(node.id);
                 if (!nodeData) return null;
-                
-                const elegantNode = {
-                    id: node.id,
-                    type: nodeData.data.node_type,
-                    content: nodeData.data.content || ""
-                };
-                
-                // Add context/inputs
-                if (nodeData.data.inputs && nodeData.data.inputs.length > 0) {
-                    if (nodeData.data.inputs.length === 1) {
-                        elegantNode.context = nodeData.data.inputs[0].source_id;
-                    } else {
-                        elegantNode.inputs = nodeData.data.inputs.map(input => input.source_id);
-                    }
-                } else {
-                    elegantNode.context = "none";
-                }
-                
-                // Add outputs from connections
-                const connections = container.connections || [];
-                const outgoingConnections = connections.filter(conn => conn.fromId === node.id);
-                if (outgoingConnections.length > 0) {
-                    elegantNode.outputs = outgoingConnections.map(conn => conn.toId);
-                }
-                
-                return elegantNode;
+                return createElegantNodeConfig(node, nodeData, nodesList, container.connections || []);
             }).filter(Boolean);
             
             // Create machine config
@@ -485,7 +901,7 @@ export async function copyMachineMetadata(container, nodeDataMap) {
 /**
  * Copy network configuration (concise format)
  */
-export async function copyNetworkConfig(container, nodeDataMap) {
+export async function copyNetworkConfig(container, nodeDataMap, nodesList = null) {
     if (!container || !nodeDataMap) {
         return { success: false, error: 'No container or node data provided' };
     }
@@ -497,12 +913,9 @@ export async function copyNetworkConfig(container, nodeDataMap) {
                 const elegantNodes = (machine.nodes || []).map(node => {
                     const nodeData = nodeDataMap.get(node.id);
                     if (!nodeData) return null;
-                    return {
-                        id: node.id,
-                        type: nodeData.data.node_type,
-                        content: nodeData.data.content || "",
-                        context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
-                    };
+                    // Use both machine and factory-level connections to capture cross-component connections
+                    const allConnections = [...(machine.connections || []), ...(factory.connections || [])];
+                    return createElegantNodeConfig(node, nodeData, nodesList, allConnections);
                 }).filter(Boolean);
                 return { id: machine.id, nodes: elegantNodes };
             });
@@ -519,12 +932,14 @@ export async function copyNetworkConfig(container, nodeDataMap) {
                 .map(nodeId => {
                     const nodeData = nodeDataMap.get(nodeId);
                     if (!nodeData) return null;
-                    return {
-                        id: nodeId,
-                        type: nodeData.data.node_type,
-                        content: nodeData.data.content || "",
-                        context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
-                    };
+                    // Find the actual node object with coordinates from nodesList
+                    const nodeWithCoords = nodesList ? nodesList.find(n => n.id === nodeId) : null;
+                    return createElegantNodeConfig(
+                        nodeWithCoords || { id: nodeId }, // Pass full node with coordinates if available
+                        nodeData, 
+                        nodesList, 
+                        factory.connections || []
+                    );
                 }).filter(Boolean);
             
             return { 
@@ -539,12 +954,9 @@ export async function copyNetworkConfig(container, nodeDataMap) {
             const elegantNodes = (machine.nodes || []).map(node => {
                 const nodeData = nodeDataMap.get(node.id);
                 if (!nodeData) return null;
-                return {
-                    id: node.id,
-                    type: nodeData.data.node_type,
-                    content: nodeData.data.content || "",
-                    context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
-                };
+                // Use both machine and network-level connections to capture cross-component connections
+                const allConnections = [...(machine.connections || []), ...(container.connections || [])];
+                return createElegantNodeConfig(node, nodeData, nodesList, allConnections);
             }).filter(Boolean);
             return { id: machine.id, nodes: elegantNodes };
         });
@@ -564,12 +976,14 @@ export async function copyNetworkConfig(container, nodeDataMap) {
             .map(nodeId => {
                 const nodeData = nodeDataMap.get(nodeId);
                 if (!nodeData) return null;
-                return {
-                    id: nodeId,
-                    type: nodeData.data.node_type,
-                    content: nodeData.data.content || "",
-                    context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
-                };
+                // Find the actual node object with coordinates from nodesList
+                const nodeWithCoords = nodesList ? nodesList.find(n => n.id === nodeId) : null;
+                return createElegantNodeConfig(
+                    nodeWithCoords || { id: nodeId }, // Pass full node with coordinates if available
+                    nodeData, 
+                    nodesList, 
+                    container.connections || []
+                );
             }).filter(Boolean);
 
         const elegantConfig = {
@@ -749,6 +1163,64 @@ export async function copyNetworkMetadata(container, nodeDataMap) {
 }
 
 /**
+ * Paste and create nodes/containers from clipboard config
+ */
+export async function pasteAndCreateConfig(offsetX = 0, offsetY = 0) {
+    try {
+        console.log('🔍 Starting paste operation with offset:', { offsetX, offsetY });
+        const pasteResult = await pasteConfig();
+        console.log('📋 Paste result:', pasteResult);
+        
+        if (!pasteResult.success) {
+            console.warn('❌ No valid config in clipboard');
+            return { success: false, error: 'No valid config in clipboard' };
+        }
+
+        // Parse the config to create nodes/containers
+        const config = pasteResult.data;
+        let createdNodes = [];
+        let createdConnections = [];
+
+        if (config.parsedYaml) {
+            const yaml = config.parsedYaml;
+            
+            // Handle different config types
+            if (yaml.machine) {
+                const result = await createMachineFromConfig(yaml.machine, offsetX, offsetY);
+                createdNodes = result.nodes;
+                createdConnections = result.connections;
+            } else if (yaml.factory) {
+                const result = await createFactoryFromConfig(yaml.factory, offsetX, offsetY);
+                createdNodes = result.nodes;
+                createdConnections = result.connections;
+            } else if (yaml.network) {
+                const result = await createNetworkFromConfig(yaml.network, offsetX, offsetY);
+                createdNodes = result.nodes;
+                createdConnections = result.connections;
+            } else if (yaml.node) {
+                // Single node config in {node: {...}} format
+                const result = await createNodeFromConfig(yaml.node, offsetX, offsetY);
+                createdNodes = [result.node];
+            } else if (yaml.node_type) {
+                // Single node config in direct format
+                const result = await createNodeFromConfig(yaml, offsetX, offsetY);
+                createdNodes = [result.node];
+            }
+        }
+
+        return {
+            success: true,
+            createdNodes,
+            createdConnections,
+            configType: config.type
+        };
+    } catch (error) {
+        console.error('Failed to paste and create config:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
  * Paste configuration from clipboard
  */
 export async function pasteConfig() {
@@ -775,8 +1247,8 @@ export async function pasteConfig() {
                 try {
                     const yamlData = yamlParse(clipboardText);
                     
-                    // Check if it's a node config (standalone node YAML)
-                    if (yamlData && yamlData.node_type && yamlData.id) {
+                    // Check if it's a config YAML (node, machine, factory, or network)
+                    if (yamlData && (yamlData.node_type || yamlData.node || yamlData.machine || yamlData.factory || yamlData.network)) {
                         return {
                             success: true,
                             type: 'raw_yaml',

@@ -228,9 +228,9 @@
                     handler: async () => {
                         let configResult;
                         if (container.isNetwork) {
-                            configResult = await copyNetworkConfig(container, $nodeDataStore);
+                            configResult = await copyNetworkConfig(container, $nodeDataStore, $nodes);
                         } else {
-                            configResult = await copyMachineConfig(container, $nodeDataStore);
+                            configResult = await copyMachineConfig(container, $nodeDataStore, $nodes);
                         }
                         if (!configResult.success) {
                             console.error('Failed to copy config:', configResult.error);

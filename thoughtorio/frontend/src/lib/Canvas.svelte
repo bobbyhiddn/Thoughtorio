@@ -9,6 +9,7 @@
     import SettingsPanel from './SettingsPanel.svelte';
     import ConfigPanel from './ConfigPanel.svelte';
     import CanvasContextMenu from './CanvasContextMenu.svelte';
+    import { pasteAndCreateConfig } from './clipboard.js';
     
     let canvasElement;
     let isDragging = false;
@@ -511,6 +512,41 @@
     }
     
     // Handle global keyboard events
+    let pasteInProgress = false;
+    
+    async function handlePaste() {
+        if (pasteInProgress) {
+            console.log('⏸️ Paste already in progress, ignoring duplicate');
+            return;
+        }
+        
+        pasteInProgress = true;
+        
+        try {
+            console.log('🍀 Pasting config from clipboard...');
+            console.log('📍 Current viewport:', $viewport);
+            
+            // Get current mouse position or center of viewport for placement
+            const centerX = ($viewport.width || 800) / 2 - ($viewport.x || 0);
+            const centerY = ($viewport.height || 600) / 2 - ($viewport.y || 0);
+            
+            console.log('📍 Paste offset calculated:', { centerX, centerY });
+            
+            const result = await pasteAndCreateConfig(centerX, centerY);
+            
+            if (result.success) {
+                console.log('✅ Successfully pasted and created:', result.createdNodes.length, 'nodes');
+                // The workflow containers will be detected automatically by the reactive system
+            } else {
+                console.warn('⚠️ Failed to paste config:', result.error);
+            }
+        } catch (error) {
+            console.error('❌ Error during paste operation:', error);
+        } finally {
+            pasteInProgress = false;
+        }
+    }
+
     function handleKeyDown(event) {
         const target = event.target;
         const isTextInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
@@ -521,6 +557,13 @@
         }
 
         console.log('Key pressed:', event.key, 'Selected connection:', $canvasState.selectedConnection, 'Selected node:', $canvasState.selectedNode, 'Selected nodes:', $canvasState.selectedNodes);
+        
+        // Paste shortcut
+        if ((event.ctrlKey || event.metaKey) && event.key === 'v' && !isTextInput) {
+            event.preventDefault();
+            handlePaste();
+            return;
+        }
         
         // Zoom shortcuts
         if ((event.ctrlKey || event.metaKey) && (event.key === '=' || event.key === '+')) {
@@ -573,6 +616,25 @@
     }
     
     // Clear selection when clicking canvas (but not after box selection)
+    function handleCanvasContextMenu(event) {
+        event.preventDefault();
+        
+        const canvasRect = canvasElement.getBoundingClientRect();
+        const contextMenuItems = [
+            {
+                label: 'Paste Config',
+                icon: '📋',
+                handler: handlePaste
+            }
+        ];
+        
+        showGlobalContextMenu(
+            event.clientX - canvasRect.left,
+            event.clientY - canvasRect.top,
+            contextMenuItems
+        );
+    }
+
     function handleCanvasClick(event) {
         // Focus canvas for keyboard events
         if (canvasElement) {
@@ -688,16 +750,22 @@
         }
     }
     
-    function newCanvas() {
+    async function newCanvas() {
         if ($nodes.length > 0 || $connections.length > 0) {
             if (!confirm('Create new canvas? All unsaved changes will be lost.')) {
                 return;
             }
         }
         
-        // Clear canvas state
+        // Clear canvas state and reset all ID counters
         nodes.set([]);
         connections.set([]);
+        // workflowContainers is a derived store - it will automatically update when nodes/connections change
+        
+        // Reset container counters
+        const { resetContainerCounters } = await import('../stores/workflows.js');
+        resetContainerCounters();
+        
         viewportActions.reset();
         currentCanvasPath = null;
         currentCanvasName = null;
@@ -902,7 +970,7 @@
         on:touchstart={handleTouchStart}
         on:touchmove={handleTouchMove}
         on:touchend={handleTouchEnd}
-        on:contextmenu|preventDefault
+        on:contextmenu={handleCanvasContextMenu}
         on:click={handleCanvasClick}
         on:keydown={handleKeyDown}
     >

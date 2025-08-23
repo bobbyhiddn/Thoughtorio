@@ -3,29 +3,92 @@ import { nodeActions, nodeDataStore, nodes, connections } from './nodes.js';
 import { ContextEngine } from '../lib/ContextEngine.js';
 import { settings } from './settings.js';
 
-// Helper functions to count existing containers
-function getNextMachineNumber(existingContainers) {
-    const machineNumbers = existingContainers
-        .filter(c => c.id && c.id.startsWith('machine-'))
-        .map(c => parseInt(c.id.split('-')[1]))
-        .filter(n => !isNaN(n));
-    return machineNumbers.length > 0 ? Math.max(...machineNumbers) + 1 : 1;
+// Canvas-based counters that reset on new canvas
+export const machineCounter = writable(0);
+export const factoryCounter = writable(0);
+export const networkCounter = writable(0);
+
+// Track created container IDs to avoid duplicates during reactive recomputation
+const createdContainerIds = new Set();
+
+// Helper functions for generating container IDs
+export function getNextMachineId(nodeGroup) {
+    // Create a stable signature for this container based on its nodes
+    const signature = nodeGroup.map(n => n.id).sort().join('-');
+    
+    // If we've already created a container for this exact set of nodes, reuse the ID
+    for (const id of createdContainerIds) {
+        if (id.includes(signature)) {
+            const machineId = id.split('-')[0] + '-' + id.split('-')[1]; // Extract just "machine-N"
+            console.log('🔄 REUSING machine ID for signature:', signature, 'ID:', machineId);
+            return machineId;
+        }
+    }
+    
+    // This is a truly new container, increment counter
+    const currentValue = get(machineCounter);
+    console.log('🔢 BEFORE machineCounter increment - current value:', currentValue);
+    machineCounter.update(n => n + 1);
+    const newValue = get(machineCounter);
+    const newId = `machine-${newValue}`;
+    console.log('🔢 NEW machine ID created:', newId, 'for signature:', signature);
+    
+    // Remember this container
+    createdContainerIds.add(`${newId}-${signature}`);
+    
+    return newId;
 }
 
-function getNextFactoryNumber(existingContainers) {
-    const factoryNumbers = existingContainers
-        .filter(c => c.id && c.id.startsWith('factory-'))
-        .map(c => parseInt(c.id.split('-')[1]))
-        .filter(n => !isNaN(n));
-    return factoryNumbers.length > 0 ? Math.max(...factoryNumbers) + 1 : 1;
+export function getNextFactoryId(entityGroup) {
+    // Create a stable signature for this factory based on its entities
+    const signature = entityGroup ? Array.from(entityGroup).sort().join('-') : '';
+    
+    // If we've already created a container for this exact set of entities, reuse the ID
+    for (const id of createdContainerIds) {
+        if (id.includes(signature) && id.startsWith('factory-')) {
+            const factoryId = id.split('-')[0] + '-' + id.split('-')[1];
+            console.log('🔄 Reusing existing factory ID:', factoryId, 'for signature:', signature);
+            return factoryId;
+        }
+    }
+    
+    // This is a truly new container, increment counter
+    factoryCounter.update(n => n + 1);
+    const newId = `factory-${get(factoryCounter)}`;
+    createdContainerIds.add(`${newId}-${signature}`);
+    console.log('✨ Created new factory ID:', newId, 'for signature:', signature);
+    return newId;
 }
 
-function getNextNetworkNumber(existingContainers) {
-    const networkNumbers = existingContainers
-        .filter(c => c.id && c.id.startsWith('network-'))
-        .map(c => parseInt(c.id.split('-')[1]))
-        .filter(n => !isNaN(n));
-    return networkNumbers.length > 0 ? Math.max(...networkNumbers) + 1 : 1;
+export function getNextNetworkId(entityGroup) {
+    // Create a stable signature for this network based on its entities
+    const signature = entityGroup ? Array.from(entityGroup).sort().join('-') : '';
+    
+    // If we've already created a container for this exact set of entities, reuse the ID
+    for (const id of createdContainerIds) {
+        if (id.includes(signature) && id.startsWith('network-')) {
+            const networkId = id.split('-')[0] + '-' + id.split('-')[1];
+            console.log('🔄 Reusing existing network ID:', networkId, 'for signature:', signature);
+            return networkId;
+        }
+    }
+    
+    // This is a truly new container, increment counter
+    networkCounter.update(n => n + 1);
+    const newId = `network-${get(networkCounter)}`;
+    createdContainerIds.add(`${newId}-${signature}`);
+    console.log('✨ Created new network ID:', newId, 'for signature:', signature);
+    return newId;
+}
+
+// Reset all counters (called by New Canvas)
+export function resetContainerCounters() {
+    console.log('🔄 RESETTING all container counters to 0');
+    machineCounter.set(0);
+    factoryCounter.set(0);
+    networkCounter.set(0);
+    createdContainerIds.clear();
+    console.log('🔄 RESET complete - counters should be 0');
 }
 
 /**
@@ -188,7 +251,7 @@ function detectBasicNodeComponents(nodeList, connectionList, existingContainers 
             const component = [];
             dfs(node.id, component);
             
-            if (component.length > 0) {
+            if (component.length > 1) {  // Only create containers for multi-node components
                 const container = createWorkflowContainer(component, connectionList, existingContainers);
                 components.push(container);
                 existingContainers.push(container);
@@ -315,7 +378,9 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
     
     // Add all factory containers as potential network components
     factoryContainers.forEach(factory => {
-        networkAdjacency.set(factory.id, new Set());
+        if (!networkAdjacency.has(factory.id)) {
+            networkAdjacency.set(factory.id, new Set());
+        }
     });
     
     // Process all network connections (factory-to-node and factory-to-factory)
@@ -483,9 +548,9 @@ function createFactoryContainer(factoryComponent, machineContainers, connectionL
         entities.has(conn.fromId) && entities.has(conn.toId)
     );
     
-    const factoryNumber = getNextFactoryNumber(existingContainers);
+    const factoryId = getNextFactoryId(entities);
     return {
-        id: `factory-${factoryNumber}`,
+        id: factoryId,
         machines: machines,
         nodeIds: nodeIds,
         connections: factoryConnections,
@@ -560,9 +625,9 @@ function createNetworkContainer(networkComponent, factoryContainers, connectionL
         entities.has(conn.fromId) && entities.has(conn.toId)
     );
     
-    const networkNumber = getNextNetworkNumber(existingContainers);
+    const networkId = getNextNetworkId(networkComponent.entities);
     return {
-        id: `network-${networkNumber}`,
+        id: networkId,
         factories: factories,
         machines: machines,
         nodeIds: nodeIds,
@@ -604,9 +669,11 @@ function createWorkflowContainer(nodeGroup, connectionList, existingContainers =
     // Determine if this is a multi-node workflow (needs play button)
     const isWorkflow = nodeGroup.length > 1 || internalConnections.length > 0;
     
-    const machineNumber = getNextMachineNumber(existingContainers);
+    // Generate next machine ID using canvas counter
+    const machineId = getNextMachineId(nodeGroup);
+    
     return {
-        id: `machine-${machineNumber}`,
+        id: machineId,
         nodes: nodeGroup,
         connections: internalConnections,
         bounds: {
