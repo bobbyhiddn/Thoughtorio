@@ -436,6 +436,83 @@ export async function copyMachineConfig(container, nodeDataMap) {
 }
 
 /**
+ * Copy elegant network configuration (concise format)
+ */
+export async function copyElegantNetworkConfig(container, nodeDataMap) {
+    if (!container || !nodeDataMap) {
+        return { success: false, error: 'No container or node data provided' };
+    }
+
+    try {
+        const elegantFactories = (container.factories || []).map(factory => {
+            const elegantMachines = (factory.machines || []).map(machine => {
+                const elegantNodes = (machine.nodes || []).map(node => {
+                    const nodeData = nodeDataMap.get(node.id);
+                    if (!nodeData) return null;
+                    return {
+                        id: node.id,
+                        type: nodeData.data.node_type,
+                        content: nodeData.data.content || "",
+                        context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
+                    };
+                }).filter(Boolean);
+                return { id: machine.id, nodes: elegantNodes };
+            });
+            return { id: factory.id, machines: elegantMachines };
+        });
+
+        const elegantConfig = {
+            network: {
+                id: container.id,
+                factories: elegantFactories
+            }
+        };
+        
+        const configYaml = yamlStringify(elegantConfig, { indent: 2, lineWidth: 0 });
+        const result = await copyText(configYaml);
+        
+        return { success: true, method: result.method, config: elegantConfig, configYaml };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Copy network metadata (full technical details)
+ */
+export async function copyNetworkMetadata(container, nodeDataMap) {
+     if (!container || !nodeDataMap) {
+        return { success: false, error: 'No container or node data provided' };
+    }
+
+    try {
+        const allFactories = container.factories || [];
+        const factoryConfigs = allFactories.map(factory => {
+            return {
+                id: factory.id,
+                machineCount: (factory.machines || []).length,
+                nodeCount: (factory.nodeIds || []).length
+            };
+        });
+
+        const config = {
+            type: 'network_metadata',
+            version: '1.0',
+            network: { id: container.id, factoryCount: allFactories.length },
+            factories: factoryConfigs,
+            connections: container.connections || []
+        };
+        
+        const configYaml = yamlStringify(config, { indent: 2, lineWidth: 0 });
+        const result = await copyText(configYaml);
+
+        return { success: true, method: result.method, config, configYaml };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+/**
  * Paste configuration from clipboard
  */
 export async function pasteConfig() {

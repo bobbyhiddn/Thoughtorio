@@ -1,7 +1,7 @@
 <script>
     import { executionState, workflowActions } from '../stores/workflows.js';
     import { nodeActions, nodeDataStore, nodes } from '../stores/nodes.js';
-    import { copyText, copyMachineConfig, copyMachineMetadata, pasteConfig } from './clipboard.js';
+    import { copyText, copyMachineConfig, copyMachineMetadata, copyElegantNetworkConfig, copyNetworkMetadata, pasteConfig } from './clipboard.js';
     
     export let container;
     export let blockNodeInteractions = false;
@@ -223,22 +223,32 @@
                     separator: true
                 },
                 {
-                    label: container.isFactory ? 'Copy Factory Config' : 'Copy Machine Config',
+                    label: container.isNetwork ? 'Copy Network Config' : container.isFactory ? 'Copy Factory Config' : 'Copy Machine Config',
                     icon: '⚙️',
                     handler: async () => {
-                        const configResult = await copyMachineConfig(container, $nodeDataStore);
+                        let configResult;
+                        if (container.isNetwork) {
+                            configResult = await copyElegantNetworkConfig(container, $nodeDataStore);
+                        } else {
+                            configResult = await copyMachineConfig(container, $nodeDataStore);
+                        }
                         if (!configResult.success) {
-                            console.error('Failed to copy machine config:', configResult.error);
+                            console.error('Failed to copy config:', configResult.error);
                         }
                     }
                 },
                 {
-                    label: container.isFactory ? 'Copy Factory Metadata' : 'Copy Machine Metadata',
+                    label: container.isNetwork ? 'Copy Network Metadata' : container.isFactory ? 'Copy Factory Metadata' : 'Copy Machine Metadata',
                     icon: '🔧',
                     handler: async () => {
-                        const metadataResult = await copyMachineMetadata(container, $nodeDataStore);
+                        let metadataResult;
+                        if (container.isNetwork) {
+                            metadataResult = await copyNetworkMetadata(container, $nodeDataStore);
+                        } else {
+                            metadataResult = await copyMachineMetadata(container, $nodeDataStore);
+                        }
                         if (!metadataResult.success) {
-                            console.error('Failed to copy machine metadata:', metadataResult.error);
+                            console.error('Failed to copy metadata:', metadataResult.error);
                         }
                     }
                 },
@@ -383,7 +393,7 @@
     .workflow-container {
         position: absolute;
         pointer-events: none;
-        z-index: 0; /* Default for machines - behind nodes but above canvas */
+        z-index: 0; /* Default z-index for a Machine */
         cursor: url('../assets/cursor-grab.svg') 16 16, grab;
     }
     
@@ -618,7 +628,7 @@
         pointer-events: all;
     }
     
-    /* Factory containers are above networks but below when dragging */
+    /* Factory containers are above networks but below machines */
     .factory-container {
         z-index: -1; /* Below machines, above networks */
     }

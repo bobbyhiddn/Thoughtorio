@@ -97,6 +97,8 @@ export const nodeActions = {
     },
     
     delete: (id) => {
+        console.log('🗑️ Deleting node:', id);
+        
         // Remove visual node
         nodes.update(n => n.filter(node => node.id !== id));
         
@@ -107,10 +109,39 @@ export const nodeActions = {
             return newStore;
         });
         
-        // Remove any connections to this node
-        connections.update(c => c.filter(conn => 
-            conn.fromId !== id && conn.toId !== id
-        ));
+        // Remove any connections to/from this node (including container connections)
+        connections.update(c => {
+            const filteredConnections = c.filter(conn => {
+                // Remove direct node connections
+                if (conn.fromId === id || conn.toId === id) {
+                    console.log('🔗 Removing direct connection:', conn.id);
+                    return false;
+                }
+                
+                // Remove container-to-node connections where this node is the target
+                if (conn.toId === id && (conn.fromId.startsWith('machine-') || 
+                                        conn.fromId.startsWith('factory-') || 
+                                        conn.fromId.startsWith('network-'))) {
+                    console.log('🔗 Removing container connection:', conn.id, 'from', conn.fromId, 'to', id);
+                    return false;
+                }
+                
+                // Remove node-to-container connections where this node is the source
+                if (conn.fromId === id && (conn.toId.startsWith('machine-') || 
+                                          conn.toId.startsWith('factory-') || 
+                                          conn.toId.startsWith('network-'))) {
+                    console.log('🔗 Removing node-to-container connection:', conn.id, 'from', id, 'to', conn.toId);
+                    return false;
+                }
+                
+                return true;
+            });
+            
+            console.log(`🔗 Connection cleanup: ${c.length} -> ${filteredConnections.length}`);
+            return filteredConnections;
+        });
+        
+        console.log('✅ Node deletion completed:', id);
     },
 
     // Get YAML backend data for a node

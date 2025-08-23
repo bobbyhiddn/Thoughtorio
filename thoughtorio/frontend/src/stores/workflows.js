@@ -57,6 +57,19 @@ import { settings } from './settings.js';
  * @property {number | null} lastExecuted
  */
 
+/**
+ * @typedef {object} NetworkContainer
+ * @property {string} id
+ * @property {FactoryContainer[]} factories
+ * @property {string[]} nodeIds
+ * @property {Connection[]} connections
+ * @property {{x: number, y: number, width: number, height: number}} bounds
+ * @property {boolean} isNetwork
+ * @property {boolean} isWorkflow
+ * @property {'idle' | 'running' | 'completed' | 'error'} executionState
+ * @property {number | null} lastExecuted
+ */
+
 // A derived store that creates a key representing the state of all nodes.
 // This forces the workflowContainers store to update when a node's properties change.
 const nodeStateKey = derived(nodes, ($nodes) => 
@@ -67,7 +80,20 @@ const nodeStateKey = derived(nodes, ($nodes) =>
 export const workflowContainers = derived([nodes, connections, nodeStateKey], ([$nodes, $connections]) => {
     // The nodeStateKey is not used directly, but its inclusion in the dependency
     // array makes this derived store reactive to changes in node properties.
-    return detectConnectedComponents($nodes, $connections);
+    if ($nodes.length === 0) return [];
+    
+    // 1. Detect all components at each level.
+    const allMachines = detectBasicNodeComponents($nodes, $connections);
+    const multiNodeMachines = allMachines.filter(c => c.isWorkflow);
+    
+    const allFactories = detectFactoryComponents(multiNodeMachines, $connections, $nodes);
+    
+    const allNetworks = detectNetworkComponents(allFactories, $connections, $nodes, multiNodeMachines);
+
+    // 2. Return ALL detected containers. This makes every container, even nested ones,
+    // available to the UI for individual interaction and execution.
+    // The visual hierarchy will be managed by z-index in the component's CSS.
+    return [...allNetworks, ...allFactories, ...allMachines];
 });
 
 /**
@@ -536,54 +562,179 @@ export const executionState = writable({
     results: new Map()
 });
 
+/**
+ * Finds any executable entity (Node, Machine, Factory, Network) by its ID.
+ * @param {string} id
+ */
+function getExecutableEntity(id) {
+    const allContainers = get(workflowContainers);
+    const container = allContainers.find(c => c.id === id);
+    if (container) return container;
+
+    // Fallback to finding a node if no container matches
+    return get(nodes).find(n => n.id === id);
+}
+
+/**
+ * The master execution function. Can execute any container recursively.
+ * @param {WorkflowContainer | FactoryContainer | NetworkContainer} container
+ */
+async function executeContainer(container) {
+    console.log(`🚀 EXECUTING CONTAINER: ${container.id} (Type: ${container.isNetwork ? 'Network' : container.isFactory ? 'Factory' : 'Machine'})`);
+    executionState.update(state => ({
+        ...state,
+        activeWorkflows: new Set([...state.activeWorkflows, container.id]),
+    }));
+
+    let children, connections;
+    if (container.isNetwork) {
+        const standaloneNodes = (container.nodeIds || []).map(id => get(nodes).find(n => n.id === id)).filter(Boolean);
+        children = [...(container.factories || []), ...standaloneNodes];
+        connections = container.connections;
+    } else if (container.isFactory) {
+        const standaloneNodes = (container.nodeIds || []).map(id => get(nodes).find(n => n.id === id)).filter(Boolean);
+        children = [...(container.machines || []), ...standaloneNodes];
+        connections = container.connections;
+    } else { // It's a Machine
+        children = container.nodes;
+        connections = container.connections;
+    }
+
+    const executionOrder = topologicalSort(children, connections);
+    console.log('📊 Execution Order:', executionOrder.join(' -> '));
+
+    const currentSettings = get(settings);
+    if (!currentSettings.activeMode || !currentSettings.story_processing_model_id) {
+        throw new Error('AI provider and model must be configured in settings');
+    }
+    let apiKey = '';
+    switch (currentSettings.activeMode) {
+        case 'openrouter':
+        case 'local':
+            apiKey = currentSettings.openrouter_api_key; break;
+        case 'openai':
+            apiKey = currentSettings.openai_api_key; break;
+        case 'gemini':
+            apiKey = currentSettings.gemini_api_key; break;
+    }
+    if (currentSettings.activeMode !== 'local' && !apiKey) {
+        throw new Error(`API key required for ${currentSettings.activeMode} provider`);
+    }
+    
+    for (const entityId of executionOrder) {
+        const entity = children.find(child => child.id === entityId);
+        if (!entity) continue;
+
+        console.log(`--- Executing Entity: ${entity.title || entity.id} ---`);
+        workflowActions.setNodeExecuting(entityId);
+        nodeActions.setNodeExecuting(entityId);
+
+        // 1. Build inputs from parent entities
+        const parentConnections = connections.filter(c => c.toId === entityId);
+        for (const conn of parentConnections) {
+            const parentEntity = getExecutableEntity(conn.fromId);
+            if (!parentEntity) continue;
+
+            let parentOutput;
+            if (parentEntity.isNetwork) parentOutput = getNetworkOutput(parentEntity);
+            else if (parentEntity.isFactory) parentOutput = getFactoryOutput(parentEntity);
+            else if (parentEntity.isWorkflow) parentOutput = getMachineOutput(conn.fromId);
+            else parentOutput = nodeActions.getNodeData(conn.fromId)?.data.output;
+
+            if (parentOutput) {
+                console.log(`   - Receiving input from: ${conn.fromId}`);
+                if (entity.isWorkflow) {
+                    await transferToMachineInputs(entityId, conn.fromId, parentOutput);
+                } else {
+                    nodeActions.addInput(entityId, conn.fromId, parentOutput.value, 1.0, parentOutput.context_chain, parentOutput.sources);
+                }
+            }
+        }
+
+        // 2. Execute the entity itself
+        if (entity.isNetwork || entity.isFactory || entity.isWorkflow) {
+            await executeContainer(entity); // Recursive call
+        } else if (entity.type === 'dynamic') {
+            const entityData = nodeActions.getNodeData(entityId);
+            const inputText = entityData.getProcessedInput();
+            if (inputText && inputText.trim()) {
+                try {
+                    console.log(`   - Calling AI for: ${entity.id}`);
+                    
+                    if (!window.go || !window.go.app || !window.go.app.App) {
+                        throw new Error('Wails runtime not available');
+                    }
+                    
+                    const response = await window.go.app.App.GetAICompletion(
+                        currentSettings.activeMode, currentSettings.story_processing_model_id, inputText, apiKey
+                    );
+                    
+                    if (response && response.Content) {
+                        nodeActions.setNodeCompleted(entityId, response.Content);
+                    } else { 
+                        throw new Error(response.Error || 'No content returned'); 
+                    }
+                } catch (error) { 
+                    console.error('AI processing failed:', error);
+                    nodeActions.setNodeError(entityId, error); 
+                }
+            } else {
+                const entityData = nodeActions.getNodeData(entityId);
+                nodeActions.setNodeCompleted(entityId, entityData?.data.content);
+            }
+        } else {
+            const entityData = nodeActions.getNodeData(entityId);
+            nodeActions.setNodeCompleted(entityId, entityData?.data.content);
+        }
+
+        workflowActions.setNodeCompleted(entityId);
+        console.log(`--- Finished Entity: ${entity.title || entity.id} ---`);
+    }
+
+    executionState.update(state => {
+        const newActive = new Set(state.activeWorkflows);
+        newActive.delete(container.id);
+        return { ...state, activeWorkflows: newActive };
+    });
+    console.log(`✅ Container execution completed: ${container.id}`);
+}
+
 // Helper functions for workflow execution
 export const workflowActions = {
-    execute: async (workflowId) => {
-        console.log('Executing workflow:', workflowId);
+    execute: async (containerId) => {
+        console.log('workflowActions.execute called for:', containerId);
         
-        executionState.update(state => ({
-            ...state,
-            activeWorkflows: new Set([...state.activeWorkflows, workflowId]),
-            activeNodes: new Set(),
-            completedNodes: new Set()
-        }));
+        const container = getExecutableEntity(containerId);
+        if (!container) {
+            console.error('Container not found for execution:', containerId);
+            return;
+        }
         
+        // Reset node states within this container before execution
+        const allNodeIds = new Set();
+        function collectNodeIds(c) {
+            if (c.nodes) c.nodes.forEach(n => allNodeIds.add(n.id));
+            if (c.machines) c.machines.forEach(m => collectNodeIds(m));
+            if (c.factories) c.factories.forEach(f => collectNodeIds(f));
+            if (c.nodeIds) c.nodeIds.forEach(id => allNodeIds.add(id));
+        }
+        collectNodeIds(container);
+
+        executionState.update(s => {
+            allNodeIds.forEach(id => {
+                s.activeNodes.delete(id);
+                s.completedNodes.delete(id);
+            });
+            return s;
+        });
+
         try {
-            /** @type {WorkflowContainer | FactoryContainer | undefined} */
-            let container;
-            const unsubscribe = workflowContainers.subscribe(containers => {
-                container = containers.find(c => c.id === workflowId);
-            });
-            unsubscribe();
-            
-            if (!container) {
-                console.error('Workflow container not found:', workflowId);
-                throw new Error('Workflow container not found');
-            }
-            
-            console.log('Found container, executing:', container);
-            
-            // Execute based on container type
-            if (container.isFactory) {
-                await executeFactory(container);
-            } else {
-                await executeWorkflow(container);
-            }
-            
-            // Mark as completed
-            executionState.update(state => {
-                const newActive = new Set(state.activeWorkflows);
-                newActive.delete(workflowId);
-                return {
-                    ...state,
-                    activeWorkflows: newActive
-                };
-            });
+            await executeContainer(container);
         } catch (error) {
-            console.error('Error starting workflow execution:', error);
+            console.error('Error during container execution:', error);
             executionState.update(state => {
                 const newActive = new Set(state.activeWorkflows);
-                newActive.delete(workflowId);
+                newActive.delete(containerId);
                 return {
                     ...state,
                     activeWorkflows: newActive
@@ -904,42 +1055,128 @@ export function getMachineOutput(machineId) {
 }
 
 /**
- * Get factory output data (aggregated from all machines)
- * @param {string} factoryId 
+ * Get factory output data by merging outputs of its terminal machines/nodes
+ * @param {FactoryContainer} factory
  * @returns {NodeOutput | null}
  */
-export function getFactoryOutput(factoryId) {
-    /** @type {FactoryContainer | undefined} */
-    let factory;
-    const unsubscribe = workflowContainers.subscribe(containers => {
-        factory = containers.find(c => c.id === factoryId && c.isFactory);
+export function getFactoryOutput(factory) {
+    if (!factory || (!factory.machines && !factory.nodeIds)) return null;
+
+    // Find terminal entities (machines or nodes) within the factory
+    const terminalEntities = [];
+    (factory.machines || []).forEach(machine => {
+        if (!factory.connections.some(conn => conn.fromId === machine.id)) {
+            terminalEntities.push({ id: machine.id, type: 'machine' });
+        }
     });
-    unsubscribe();
+    (factory.nodeIds || []).forEach(nodeId => {
+        if (!factory.connections.some(conn => conn.fromId === nodeId)) {
+            terminalEntities.push({ id: nodeId, type: 'node' });
+        }
+    });
+
+    if (terminalEntities.length === 0) return null;
+
+    const terminalOutputs = terminalEntities.map(entity => {
+        if (entity.type === 'machine') return getMachineOutput(entity.id);
+        if (entity.type === 'node') {
+            const nodeData = nodeActions.getNodeData(entity.id);
+            return nodeData ? nodeData.data.output : null;
+        }
+        return null;
+    }).filter(Boolean);
+
+    if (terminalOutputs.length === 0) return null;
+    if (terminalOutputs.length === 1) return terminalOutputs[0];
     
-    if (!factory || !factory.machines) return null;
+    // Merge outputs using ContextEngine-style logic
+    const mergedValue = { facts: [], history: [], task: '' };
+    const mergedSources = new Set();
+    const mergedContextChain = [];
+    const seenContextItems = new Set();
+
+    terminalOutputs.forEach(output => {
+        if (output.value?.facts) mergedValue.facts.push(...output.value.facts);
+        if (output.value?.history) mergedValue.history.push(...output.value.history);
+        if (output.value?.task) mergedValue.task = output.value.task;
+        (output.sources || []).forEach(s => mergedSources.add(s));
+        (output.context_chain || []).forEach(item => {
+            if (!seenContextItems.has(item.node_id)) {
+                mergedContextChain.push(item);
+                seenContextItems.add(item.node_id);
+            }
+        });
+    });
+
+    return {
+        type: 'structured_context',
+        value: mergedValue,
+        sources: Array.from(mergedSources),
+        context_chain: mergedContextChain,
+    };
+}
+
+/**
+ * Get network output data by merging outputs of its terminal factories/nodes
+ * @param {NetworkContainer} network
+ * @returns {NodeOutput | null}
+ */
+export function getNetworkOutput(network) {
+    if (!network || (!network.factories && !network.nodeIds)) return null;
     
-    // Get outputs from all machines in the factory
-    const machineOutputs = factory.machines
-        .map(machine => getMachineOutput(machine.id))
-        .filter(output => output !== null);
+    const terminalEntities = [];
+    (network.factories || []).forEach(factory => {
+        if (!network.connections.some(conn => conn.fromId === factory.id)) {
+            terminalEntities.push({ id: factory.id, type: 'factory' });
+        }
+    });
+    (network.nodeIds || []).forEach(nodeId => {
+        if (!network.connections.some(conn => conn.fromId === nodeId)) {
+            terminalEntities.push({ id: nodeId, type: 'node' });
+        }
+    });
+
+    if (terminalEntities.length === 0) return null;
+
+    const terminalOutputs = terminalEntities.map(entity => {
+        if (entity.type === 'factory') {
+            const factory = get(workflowContainers).find(c => c.id === entity.id);
+            return factory ? getFactoryOutput(factory) : null;
+        }
+        if (entity.type === 'node') {
+             const nodeData = nodeActions.getNodeData(entity.id);
+             return nodeData ? nodeData.data.output : null;
+        }
+        return null;
+    }).filter(Boolean);
+
+    if (terminalOutputs.length === 0) return null;
+    if (terminalOutputs.length === 1) return terminalOutputs[0];
     
-    if (machineOutputs.length === 0) return null;
-    
-    // Aggregate all machine outputs
-    if (machineOutputs.length === 1) {
-        return machineOutputs[0];
-    }
-    
-    // Merge multiple machine outputs
-    const aggregatedValue = machineOutputs.map(output => output.value).join('\n\n---\n\n');
-    const aggregatedSources = [...new Set(machineOutputs.flatMap(output => output.sources || []))];
-    const aggregatedContextChain = machineOutputs.flatMap(output => output.context_chain || []);
+    // Merge outputs (same logic as getFactoryOutput)
+    const mergedValue = { facts: [], history: [], task: '' };
+    const mergedSources = new Set();
+    const mergedContextChain = [];
+    const seenContextItems = new Set();
+
+    terminalOutputs.forEach(output => {
+        if (output.value?.facts) mergedValue.facts.push(...output.value.facts);
+        if (output.value?.history) mergedValue.history.push(...output.value.history);
+        if (output.value?.task) mergedValue.task = output.value.task;
+        (output.sources || []).forEach(s => mergedSources.add(s));
+        (output.context_chain || []).forEach(item => {
+            if (!seenContextItems.has(item.node_id)) {
+                mergedContextChain.push(item);
+                seenContextItems.add(item.node_id);
+            }
+        });
+    });
     
     return {
-        type: 'text',
-        value: aggregatedValue,
-        sources: aggregatedSources,
-        context_chain: aggregatedContextChain
+        type: 'structured_context',
+        value: mergedValue,
+        sources: Array.from(mergedSources),
+        context_chain: mergedContextChain,
     };
 }
 
