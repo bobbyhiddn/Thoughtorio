@@ -743,6 +743,28 @@ function getExecutableEntity(id) {
 }
 
 /**
+ * Recursively collects all node IDs from a container and its children.
+ * @param {object} container - A machine, factory, or network container.
+ * @param {Set<string>} [nodeIdSet] - The set to add node IDs to.
+ * @returns {Set<string>} A set of all node IDs.
+ */
+function collectAllNodeIds(container, nodeIdSet = new Set()) {
+    if (container.nodes) {
+        container.nodes.forEach(n => nodeIdSet.add(n.id));
+    }
+    if (container.nodeIds) {
+        container.nodeIds.forEach(id => nodeIdSet.add(id));
+    }
+    if (container.machines) {
+        container.machines.forEach(m => collectAllNodeIds(m, nodeIdSet));
+    }
+    if (container.factories) {
+        container.factories.forEach(f => collectAllNodeIds(f, nodeIdSet));
+    }
+    return nodeIdSet;
+}
+
+/**
  * The master execution function. Can execute any container recursively.
  * @param {WorkflowContainer | FactoryContainer | NetworkContainer} container
  */
@@ -796,11 +818,30 @@ async function executeContainer(container) {
         workflowActions.setNodeExecuting(entityId);
         nodeActions.setNodeExecuting(entityId);
 
-        // 1. Build inputs from parent entities
-        const parentConnections = connections.filter(c => c.toId === entityId);
-        for (const conn of parentConnections) {
+        // 1. Build inputs from external sources (parents, siblings, etc.)
+        const allNodeIdsInEntity = collectAllNodeIds(entity);
+
+        // Find all connections that terminate inside this entity but originate outside of it.
+        const externalConnections = connections.filter(conn =>
+            allNodeIdsInEntity.has(conn.toId) && !allNodeIdsInEntity.has(conn.fromId)
+        );
+
+        for (const conn of externalConnections) {
             const parentEntity = getExecutableEntity(conn.fromId);
             if (!parentEntity) continue;
+
+            // If the context source is another executable container, execute it first
+            // to ensure its context is up-to-date before we read it.
+            if (parentEntity.isNetwork || parentEntity.isFactory || parentEntity.isWorkflow) {
+                const currentState = get(executionState);
+                const isParentRunning = currentState.activeWorkflows.has(parentEntity.id);
+                if (!isParentRunning) {
+                    console.log(`[Dependency Execution] Executing context source '${parentEntity.id}' before processing '${entity.id}'`);
+                    await executeContainer(parentEntity);
+                } else {
+                    console.log(`[Dependency Execution] Context source '${parentEntity.id}' is already running. Using current state.`);
+                }
+            }
 
             let parentOutput;
             if (parentEntity.isNetwork) parentOutput = getNetworkOutput(parentEntity);
@@ -809,7 +850,51 @@ async function executeContainer(container) {
             else parentOutput = nodeActions.getNodeData(conn.fromId)?.data.output;
 
             if (parentOutput) {
-                console.log(`   - Receiving input from: ${conn.fromId}`);
+                console.log(`   - Receiving external input at node '${conn.toId}' from: ${conn.fromId}`);
+                // Add the input directly to the specific target node inside the entity.
+                nodeActions.addInput(conn.toId, conn.fromId, parentOutput.value, 1.0, parentOutput.context_chain, parentOutput.sources);
+            }
+        }
+
+        // 1b. Also handle internal connections within this entity (for machines with multiple nodes)
+        const internalConnections = connections.filter(conn =>
+            allNodeIdsInEntity.has(conn.toId) && allNodeIdsInEntity.has(conn.fromId)
+        );
+        for (const conn of internalConnections) {
+            const parentNodeData = nodeActions.getNodeData(conn.fromId);
+            if (parentNodeData && parentNodeData.data.output) {
+                console.log(`   - Receiving internal input at node '${conn.toId}' from: ${conn.fromId}`);
+                const { value, context_chain, sources } = parentNodeData.data.output;
+                nodeActions.addInput(conn.toId, conn.fromId, value, 1.0, context_chain, sources);
+            }
+        }
+
+        // Also handle direct entity-to-entity connections (legacy support)
+        const entityConnections = connections.filter(c => c.toId === entityId);
+        for (const conn of entityConnections) {
+            const parentEntity = getExecutableEntity(conn.fromId);
+            if (!parentEntity) continue;
+
+            // If the context source is another executable container, execute it first
+            if (parentEntity.isNetwork || parentEntity.isFactory || parentEntity.isWorkflow) {
+                const currentState = get(executionState);
+                const isParentRunning = currentState.activeWorkflows.has(parentEntity.id);
+                if (!isParentRunning) {
+                    console.log(`[Dependency Execution] Executing context source '${parentEntity.id}' before processing '${entityId}'`);
+                    await executeContainer(parentEntity);
+                } else {
+                    console.log(`[Dependency Execution] Context source '${parentEntity.id}' is already running. Using current state.`);
+                }
+            }
+
+            let parentOutput;
+            if (parentEntity.isNetwork) parentOutput = getNetworkOutput(parentEntity);
+            else if (parentEntity.isFactory) parentOutput = getFactoryOutput(parentEntity);
+            else if (parentEntity.isWorkflow) parentOutput = getMachineOutput(conn.fromId);
+            else parentOutput = nodeActions.getNodeData(conn.fromId)?.data.output;
+
+            if (parentOutput) {
+                console.log(`   - Receiving entity input from: ${conn.fromId}`);
                 if (entity.isWorkflow) {
                     await transferToMachineInputs(entityId, conn.fromId, parentOutput);
                 } else {

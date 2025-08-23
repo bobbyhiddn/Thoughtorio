@@ -1094,12 +1094,33 @@ export async function pasteAndCreateConfigUniversal(targetX = null, targetY = nu
         // Phase 1: Create all nodes and build ID mapping
         let actualIdMap = new Map(); // originalId -> actualNodeId
         
+        // Calculate bounds of all nodes to center the structure
+        const allNodes = universalContainer.flattenByType('node');
+        const bounds = {
+            minX: Math.min(...allNodes.map(n => n.coordinates.x)),
+            maxX: Math.max(...allNodes.map(n => n.coordinates.x)),
+            minY: Math.min(...allNodes.map(n => n.coordinates.y)),
+            maxY: Math.max(...allNodes.map(n => n.coordinates.y))
+        };
+        const structureCenter = {
+            x: (bounds.minX + bounds.maxX) / 2,
+            y: (bounds.minY + bounds.maxY) / 2
+        };
+
         const createNodesRecursive = async (container) => {
             if (container.type === 'node') {
+                // Calculate relative position from original structure center
+                const relativeX = container.coordinates.x - structureCenter.x;
+                const relativeY = container.coordinates.y - structureCenter.y;
+                
+                // Position relative to target center
+                const finalX = target.x + relativeX;
+                const finalY = target.y + relativeY;
+                
                 const node = nodeActions.add(
                     container.config.nodeType,
-                    container.coordinates.x,
-                    container.coordinates.y,
+                    finalX,
+                    finalY,
                     container.config.content || ''
                 );
                 createdNodes.push(node);
@@ -1277,17 +1298,15 @@ export async function pasteAndCreateConfigUniversal(targetX = null, targetY = nu
                             connectionActions.add(sourceId, actualNodeId, 'output', 'input');
                             console.log(`✅ Created machine-to-node connection: ${sourceId} -> ${actualNodeId}`);
                             
-                            // Also set node context via addInput
-                            const { nodeDataStore } = await import('../stores/nodes.js');
-                            const { get } = await import('svelte/store');
-                            const nodeData = get(nodeDataStore).get(actualNodeId);
-                            if (nodeData) {
-                                nodeData.addInput(sourceId, '', 1.0);
-                                nodeDataStore.update(store => {
-                                    const newStore = new Map(store);
-                                    newStore.set(actualNodeId, nodeData);
-                                    return newStore;
-                                });
+                            // Get machine output with full context chain and transfer it
+                            const { getMachineOutput } = await import('../stores/workflows.js');
+                            const machineOutput = getMachineOutput(sourceId);
+                            
+                            if (machineOutput) {
+                                // Use nodeActions.addInput which properly handles context chains
+                                const { nodeActions } = await import('../stores/nodes.js');
+                                console.log(`🔗 Adding machine output to node: context chain length: ${machineOutput.context_chain?.length || 0}`);
+                                nodeActions.addInput(actualNodeId, sourceId, machineOutput.value, 1.0, machineOutput.context_chain, machineOutput.sources);
                             }
                         } else {
                             console.warn(` Failed to resolve machine context: ${container.config.context} -> ${sourceId}`);
@@ -1399,17 +1418,19 @@ export async function pasteAndCreateConfigUniversal(targetX = null, targetY = nu
                             connectionActions.add(sourceId, actualNodeId, 'output', 'input');
                             console.log(`✅ Created factory-to-node connection: ${sourceId} -> ${actualNodeId}`);
                             
-                            // Also set node context via addInput
-                            const { nodeDataStore } = await import('../stores/nodes.js');
+                            // Get factory output with full context chain and transfer it
+                            const { workflowContainers, getFactoryOutput } = await import('../stores/workflows.js');
                             const { get } = await import('svelte/store');
-                            const nodeData = get(nodeDataStore).get(actualNodeId);
-                            if (nodeData) {
-                                nodeData.addInput(sourceId, '', 1.0);
-                                nodeDataStore.update(store => {
-                                    const newStore = new Map(store);
-                                    newStore.set(actualNodeId, nodeData);
-                                    return newStore;
-                                });
+                            const factoryContainer = get(workflowContainers).find(c => c.id === sourceId);
+                            
+                            if (factoryContainer) {
+                                const factoryOutput = getFactoryOutput(factoryContainer);
+                                if (factoryOutput) {
+                                    // Use nodeActions.addInput which properly handles context chains
+                                    const { nodeActions } = await import('../stores/nodes.js');
+                                    console.log(`🔗 Adding factory output to node: context chain length: ${factoryOutput.context_chain?.length || 0}`);
+                                    nodeActions.addInput(actualNodeId, sourceId, factoryOutput.value, 1.0, factoryOutput.context_chain, factoryOutput.sources);
+                                }
                             }
                         } else {
                             console.warn(`⚠️ Failed to resolve factory context: ${container.config.context} -> ${sourceId}`);
