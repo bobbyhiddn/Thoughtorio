@@ -444,6 +444,7 @@ export async function copyElegantNetworkConfig(container, nodeDataMap) {
     }
 
     try {
+        // Process factories and their machines
         const elegantFactories = (container.factories || []).map(factory => {
             const elegantMachines = (factory.machines || []).map(machine => {
                 const elegantNodes = (machine.nodes || []).map(node => {
@@ -458,13 +459,59 @@ export async function copyElegantNetworkConfig(container, nodeDataMap) {
                 }).filter(Boolean);
                 return { id: machine.id, nodes: elegantNodes };
             });
-            return { id: factory.id, machines: elegantMachines };
+            
+            // Add standalone nodes in the factory (not in machines)
+            const standaloneNodes = (factory.nodeIds || [])
+                .filter(nodeId => {
+                    // Find nodes that are not in any machine
+                    const isInMachine = factory.machines && factory.machines.some(machine => 
+                        machine.nodes && machine.nodes.some(node => node.id === nodeId)
+                    );
+                    return !isInMachine;
+                })
+                .map(nodeId => {
+                    const nodeData = nodeDataMap.get(nodeId);
+                    if (!nodeData) return null;
+                    return {
+                        id: nodeId,
+                        type: nodeData.data.node_type,
+                        content: nodeData.data.content || "",
+                        context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
+                    };
+                }).filter(Boolean);
+            
+            return { 
+                id: factory.id, 
+                machines: elegantMachines,
+                ...(standaloneNodes.length > 0 && { standaloneNodes })
+            };
         });
+
+        // Add standalone nodes at network level (not in any factory)
+        const networkStandaloneNodes = (container.nodeIds || [])
+            .filter(nodeId => {
+                // Find nodes that are not in any factory
+                const isInFactory = container.factories && container.factories.some(factory => 
+                    factory.nodeIds && factory.nodeIds.includes(nodeId)
+                );
+                return !isInFactory;
+            })
+            .map(nodeId => {
+                const nodeData = nodeDataMap.get(nodeId);
+                if (!nodeData) return null;
+                return {
+                    id: nodeId,
+                    type: nodeData.data.node_type,
+                    content: nodeData.data.content || "",
+                    context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
+                };
+            }).filter(Boolean);
 
         const elegantConfig = {
             network: {
                 id: container.id,
-                factories: elegantFactories
+                factories: elegantFactories,
+                ...(networkStandaloneNodes.length > 0 && { standaloneNodes: networkStandaloneNodes })
             }
         };
         
@@ -481,26 +528,118 @@ export async function copyElegantNetworkConfig(container, nodeDataMap) {
  * Copy network metadata (full technical details)
  */
 export async function copyNetworkMetadata(container, nodeDataMap) {
-     if (!container || !nodeDataMap) {
+    if (!container || !nodeDataMap) {
         return { success: false, error: 'No container or node data provided' };
     }
 
     try {
+        // Detailed factory analysis
         const allFactories = container.factories || [];
         const factoryConfigs = allFactories.map(factory => {
+            const machineConfigs = (factory.machines || []).map(machine => {
+                return {
+                    id: machine.id,
+                    nodeCount: (machine.nodes || []).length,
+                    nodeTypes: [...new Set((machine.nodes || []).map(node => {
+                        const nodeData = nodeDataMap.get(node.id);
+                        return nodeData ? nodeData.data.node_type : 'unknown';
+                    }))],
+                    bounds: machine.bounds
+                };
+            });
+            
+            const factoryStandaloneNodes = (factory.nodeIds || []).filter(nodeId => {
+                const isInMachine = factory.machines && factory.machines.some(machine => 
+                    machine.nodes && machine.nodes.some(node => node.id === nodeId)
+                );
+                return !isInMachine;
+            });
+            
             return {
                 id: factory.id,
-                machineCount: (factory.machines || []).length,
-                nodeCount: (factory.nodeIds || []).length
+                machineCount: machineConfigs.length,
+                standaloneNodeCount: factoryStandaloneNodes.length,
+                totalNodeCount: (factory.nodeIds || []).length,
+                machines: machineConfigs,
+                standaloneNodes: factoryStandaloneNodes.map(nodeId => {
+                    const nodeData = nodeDataMap.get(nodeId);
+                    return nodeData ? {
+                        id: nodeId,
+                        type: nodeData.data.node_type,
+                        title: nodeData.data.metadata.title,
+                        version: nodeData.data.metadata.version
+                    } : { id: nodeId, type: 'unknown' };
+                }),
+                bounds: factory.bounds
             };
         });
+
+        // Network-level standalone nodes
+        const networkStandaloneNodes = (container.nodeIds || [])
+            .filter(nodeId => {
+                const isInFactory = container.factories && container.factories.some(factory => 
+                    factory.nodeIds && factory.nodeIds.includes(nodeId)
+                );
+                return !isInFactory;
+            })
+            .map(nodeId => {
+                const nodeData = nodeDataMap.get(nodeId);
+                return nodeData ? {
+                    id: nodeId,
+                    type: nodeData.data.node_type,
+                    title: nodeData.data.metadata.title,
+                    content: nodeData.data.content,
+                    version: nodeData.data.metadata.version,
+                    inputs: (nodeData.data.inputs || []).map(input => ({
+                        sourceId: input.source_id,
+                        weight: input.weight
+                    })),
+                    execution: nodeData.data.execution
+                } : { id: nodeId, type: 'unknown' };
+            });
+
+        // Calculate total statistics
+        const allNodeIds = new Set();
+        allFactories.forEach(factory => {
+            (factory.nodeIds || []).forEach(nodeId => allNodeIds.add(nodeId));
+        });
+        (container.nodeIds || []).forEach(nodeId => allNodeIds.add(nodeId));
 
         const config = {
             type: 'network_metadata',
             version: '1.0',
-            network: { id: container.id, factoryCount: allFactories.length },
+            timestamp: new Date().toISOString(),
+            network: { 
+                id: container.id, 
+                factoryCount: allFactories.length,
+                standaloneNodeCount: networkStandaloneNodes.length,
+                totalNodeCount: allNodeIds.size,
+                bounds: container.bounds
+            },
             factories: factoryConfigs,
-            connections: container.connections || []
+            networkStandaloneNodes: networkStandaloneNodes,
+            connections: container.connections || [],
+            metadata: {
+                total_factories: allFactories.length,
+                total_machines: allFactories.reduce((sum, f) => sum + (f.machines || []).length, 0),
+                total_nodes: allNodeIds.size,
+                connection_count: (container.connections || []).length,
+                hierarchy_depth: 3, // Network -> Factory -> Machine -> Node
+                container_types: ['network', 'factory', 'machine'],
+                analysis: {
+                    factories_with_machines: allFactories.filter(f => (f.machines || []).length > 0).length,
+                    factories_with_standalone_nodes: allFactories.filter(f => {
+                        const standaloneCount = (f.nodeIds || []).filter(nodeId => {
+                            const isInMachine = f.machines && f.machines.some(machine => 
+                                machine.nodes && machine.nodes.some(node => node.id === nodeId)
+                            );
+                            return !isInMachine;
+                        }).length;
+                        return standaloneCount > 0;
+                    }).length,
+                    network_standalone_nodes: networkStandaloneNodes.length
+                }
+            }
         };
         
         const configYaml = yamlStringify(config, { indent: 2, lineWidth: 0 });
