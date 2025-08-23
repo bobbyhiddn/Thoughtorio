@@ -1,7 +1,7 @@
 <script>
     import { executionState, workflowActions } from '../stores/workflows.js';
     import { nodeActions, nodeDataStore, nodes } from '../stores/nodes.js';
-    import { copyText, copyMachineConfig, copyMachineMetadata, copyElegantNetworkConfig, copyNetworkMetadata, pasteConfig } from './clipboard.js';
+    import { copyText, copyMachineConfig, copyMachineMetadata, copyNetworkConfig, copyNetworkMetadata, pasteConfig } from './clipboard.js';
     
     export let container;
     export let blockNodeInteractions = false;
@@ -228,7 +228,7 @@
                     handler: async () => {
                         let configResult;
                         if (container.isNetwork) {
-                            configResult = await copyElegantNetworkConfig(container, $nodeDataStore);
+                            configResult = await copyNetworkConfig(container, $nodeDataStore);
                         } else {
                             configResult = await copyMachineConfig(container, $nodeDataStore);
                         }

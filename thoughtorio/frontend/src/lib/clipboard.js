@@ -239,69 +239,122 @@ export async function copyNodeConfig(nodeData, visualContent = null) {
 }
 
 /**
- * Copy elegant machine configuration (concise format)
+ * Copy machine configuration (concise format)
  */
-export async function copyElegantMachineConfig(container, nodeDataMap) {
+export async function copyMachineConfig(container, nodeDataMap) {
     if (!container || !nodeDataMap) {
         return { success: false, error: 'No container or node data provided' };
     }
     
     try {
-        let allNodes = [];
+        let elegantConfig;
         
         if (container.isFactory) {
-            // Factory: collect nodes from all contained machines
-            if (container.machines) {
-                container.machines.forEach(machine => {
-                    if (machine.nodes) {
-                        allNodes.push(...machine.nodes);
+            // Factory: show machines with their nested nodes
+            const elegantMachines = (container.machines || []).map(machine => {
+                const elegantNodes = (machine.nodes || []).map(node => {
+                    const nodeData = nodeDataMap.get(node.id);
+                    if (!nodeData) return null;
+                    
+                    const elegantNode = {
+                        id: node.id,
+                        type: nodeData.data.node_type,
+                        content: nodeData.data.content || ""
+                    };
+                    
+                    // Add context/inputs
+                    if (nodeData.data.inputs && nodeData.data.inputs.length > 0) {
+                        if (nodeData.data.inputs.length === 1) {
+                            elegantNode.context = nodeData.data.inputs[0].source_id;
+                        } else {
+                            elegantNode.inputs = nodeData.data.inputs.map(input => input.source_id);
+                        }
+                    } else {
+                        elegantNode.context = "none";
                     }
-                });
-            }
+                    
+                    // Add outputs from machine's internal connections
+                    const machineConnections = machine.connections || [];
+                    const outgoingConnections = machineConnections.filter(conn => conn.fromId === node.id);
+                    if (outgoingConnections.length > 0) {
+                        elegantNode.outputs = outgoingConnections.map(conn => conn.toId);
+                    }
+                    
+                    return elegantNode;
+                }).filter(Boolean);
+                
+                return { id: machine.id, nodes: elegantNodes };
+            });
+            
+            // Add standalone nodes in the factory (not in machines)
+            const standaloneNodes = (container.nodeIds || [])
+                .filter(nodeId => {
+                    // Find nodes that are not in any machine
+                    const isInMachine = container.machines && container.machines.some(machine => 
+                        machine.nodes && machine.nodes.some(node => node.id === nodeId)
+                    );
+                    return !isInMachine;
+                })
+                .map(nodeId => {
+                    const nodeData = nodeDataMap.get(nodeId);
+                    if (!nodeData) return null;
+                    return {
+                        id: nodeId,
+                        type: nodeData.data.node_type,
+                        content: nodeData.data.content || "",
+                        context: (nodeData.data.inputs && nodeData.data.inputs[0]) ? nodeData.data.inputs[0].source_id : "none",
+                    };
+                }).filter(Boolean);
+            
+            // Create factory config
+            elegantConfig = {
+                factory: {
+                    id: container.id,
+                    machines: elegantMachines,
+                    ...(standaloneNodes.length > 0 && { nodes: standaloneNodes })
+                }
+            };
         } else {
             // Regular machine: use container.nodes
-            allNodes = container.nodes || [];
-        }
-        
-        // Create elegant node configs
-        const elegantNodes = allNodes.map(node => {
-            const nodeData = nodeDataMap.get(node.id);
-            if (!nodeData) return null;
-            
-            const elegantNode = {
-                id: node.id,
-                type: nodeData.data.node_type,
-                content: nodeData.data.content || ""
-            };
-            
-            // Add context/inputs
-            if (nodeData.data.inputs && nodeData.data.inputs.length > 0) {
-                if (nodeData.data.inputs.length === 1) {
-                    elegantNode.context = nodeData.data.inputs[0].source_id;
+            const elegantNodes = (container.nodes || []).map(node => {
+                const nodeData = nodeDataMap.get(node.id);
+                if (!nodeData) return null;
+                
+                const elegantNode = {
+                    id: node.id,
+                    type: nodeData.data.node_type,
+                    content: nodeData.data.content || ""
+                };
+                
+                // Add context/inputs
+                if (nodeData.data.inputs && nodeData.data.inputs.length > 0) {
+                    if (nodeData.data.inputs.length === 1) {
+                        elegantNode.context = nodeData.data.inputs[0].source_id;
+                    } else {
+                        elegantNode.inputs = nodeData.data.inputs.map(input => input.source_id);
+                    }
                 } else {
-                    elegantNode.inputs = nodeData.data.inputs.map(input => input.source_id);
+                    elegantNode.context = "none";
                 }
-            } else {
-                elegantNode.context = "none";
-            }
+                
+                // Add outputs from connections
+                const connections = container.connections || [];
+                const outgoingConnections = connections.filter(conn => conn.fromId === node.id);
+                if (outgoingConnections.length > 0) {
+                    elegantNode.outputs = outgoingConnections.map(conn => conn.toId);
+                }
+                
+                return elegantNode;
+            }).filter(Boolean);
             
-            // Add outputs from connections
-            const connections = container.connections || [];
-            const outgoingConnections = connections.filter(conn => conn.fromId === node.id);
-            if (outgoingConnections.length > 0) {
-                elegantNode.outputs = outgoingConnections.map(conn => conn.toId);
-            }
-            
-            return elegantNode;
-        }).filter(Boolean);
-        
-        // Create elegant machine/factory config
-        const elegantConfig = {
-            [container.isFactory ? 'factory' : 'machine']: {
-                id: container.id,
-                nodes: elegantNodes
-            }
-        };
+            // Create machine config
+            elegantConfig = {
+                machine: {
+                    id: container.id,
+                    nodes: elegantNodes
+                }
+            };
+        }
         
         const configYaml = yamlStringify(elegantConfig, { 
             indent: 2,
@@ -428,17 +481,11 @@ export async function copyMachineMetadata(container, nodeDataMap) {
     }
 }
 
-/**
- * Copy workflow machine configuration (elegant format)
- */
-export async function copyMachineConfig(container, nodeDataMap) {
-    return copyElegantMachineConfig(container, nodeDataMap);
-}
 
 /**
- * Copy elegant network configuration (concise format)
+ * Copy network configuration (concise format)
  */
-export async function copyElegantNetworkConfig(container, nodeDataMap) {
+export async function copyNetworkConfig(container, nodeDataMap) {
     if (!container || !nodeDataMap) {
         return { success: false, error: 'No container or node data provided' };
     }
@@ -483,7 +530,7 @@ export async function copyElegantNetworkConfig(container, nodeDataMap) {
             return { 
                 id: factory.id, 
                 machines: elegantMachines,
-                ...(standaloneNodes.length > 0 && { standaloneNodes })
+                ...(standaloneNodes.length > 0 && { nodes: standaloneNodes })
             };
         });
 
@@ -511,7 +558,7 @@ export async function copyElegantNetworkConfig(container, nodeDataMap) {
             network: {
                 id: container.id,
                 factories: elegantFactories,
-                ...(networkStandaloneNodes.length > 0 && { standaloneNodes: networkStandaloneNodes })
+                ...(networkStandaloneNodes.length > 0 && { nodes: networkStandaloneNodes })
             }
         };
         

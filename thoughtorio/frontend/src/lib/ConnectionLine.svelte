@@ -6,12 +6,12 @@
     export let connection;
     
     // Find the connected entities (nodes, machines, factories, or networks)
-    $: fromEntity = (connection.fromId.startsWith('workflow-') || 
+    $: fromEntity = (connection.fromId.startsWith('machine-') || 
                      connection.fromId.startsWith('factory-') || 
                      connection.fromId.startsWith('network-'))
         ? $workflowContainers.find(c => c.id === connection.fromId)
         : $nodes.find(n => n.id === connection.fromId);
-    $: toEntity = (connection.toId.startsWith('workflow-') || 
+    $: toEntity = (connection.toId.startsWith('machine-') || 
                    connection.toId.startsWith('factory-') || 
                    connection.toId.startsWith('network-'))
         ? $workflowContainers.find(c => c.id === connection.toId)

@@ -3,6 +3,31 @@ import { nodeActions, nodeDataStore, nodes, connections } from './nodes.js';
 import { ContextEngine } from '../lib/ContextEngine.js';
 import { settings } from './settings.js';
 
+// Helper functions to count existing containers
+function getNextMachineNumber(existingContainers) {
+    const machineNumbers = existingContainers
+        .filter(c => c.id && c.id.startsWith('machine-'))
+        .map(c => parseInt(c.id.split('-')[1]))
+        .filter(n => !isNaN(n));
+    return machineNumbers.length > 0 ? Math.max(...machineNumbers) + 1 : 1;
+}
+
+function getNextFactoryNumber(existingContainers) {
+    const factoryNumbers = existingContainers
+        .filter(c => c.id && c.id.startsWith('factory-'))
+        .map(c => parseInt(c.id.split('-')[1]))
+        .filter(n => !isNaN(n));
+    return factoryNumbers.length > 0 ? Math.max(...factoryNumbers) + 1 : 1;
+}
+
+function getNextNetworkNumber(existingContainers) {
+    const networkNumbers = existingContainers
+        .filter(c => c.id && c.id.startsWith('network-'))
+        .map(c => parseInt(c.id.split('-')[1]))
+        .filter(n => !isNaN(n));
+    return networkNumbers.length > 0 ? Math.max(...networkNumbers) + 1 : 1;
+}
+
 /**
  * @typedef {import('../lib/NodeData.js').NodeData} NodeData
  * @typedef {import('../lib/NodeData.js').NodeOutput} NodeOutput
@@ -82,14 +107,18 @@ export const workflowContainers = derived([nodes, connections, nodeStateKey], ([
     // array makes this derived store reactive to changes in node properties.
     if ($nodes.length === 0) return [];
     
-    // 1. Detect all components at each level.
-    const allMachines = detectBasicNodeComponents($nodes, $connections);
+    // 1. Detect all components at each level, passing existing containers for ID generation
+    let existingContainers = [];
+    
+    const allMachines = detectBasicNodeComponents($nodes, $connections, existingContainers);
+    existingContainers = [...existingContainers, ...allMachines];
+    
     const multiNodeMachines = allMachines.filter(c => c.isWorkflow);
+    const allFactories = detectFactoryComponents(multiNodeMachines, $connections, $nodes, existingContainers);
+    existingContainers = [...existingContainers, ...allFactories];
     
-    const allFactories = detectFactoryComponents(multiNodeMachines, $connections, $nodes);
+    const allNetworks = detectNetworkComponents(allFactories, $connections, $nodes, multiNodeMachines, existingContainers);
     
-    const allNetworks = detectNetworkComponents(allFactories, $connections, $nodes, multiNodeMachines);
-
     // 2. Return ALL detected containers. This makes every container, even nested ones,
     // available to the UI for individual interaction and execution.
     // The visual hierarchy will be managed by z-index in the component's CSS.
@@ -118,7 +147,7 @@ function detectConnectedComponents(nodeList, connectionList) {
     return [...basicComponents, ...factoryComponents, ...networkComponents];
 }
 
-function detectBasicNodeComponents(nodeList, connectionList) {
+function detectBasicNodeComponents(nodeList, connectionList, existingContainers = []) {
     // Build adjacency list for node-to-node connections only
     const adjacency = new Map();
     nodeList.forEach(node => {
@@ -160,7 +189,9 @@ function detectBasicNodeComponents(nodeList, connectionList) {
             dfs(node.id, component);
             
             if (component.length > 0) {
-                components.push(createWorkflowContainer(component, connectionList));
+                const container = createWorkflowContainer(component, connectionList, existingContainers);
+                components.push(container);
+                existingContainers.push(container);
             }
         }
     }
@@ -168,17 +199,19 @@ function detectBasicNodeComponents(nodeList, connectionList) {
     return components;
 }
 
-function detectFactoryComponents(machineContainers, connectionList, nodeList) {
+function detectFactoryComponents(machineContainers, connectionList, nodeList, existingContainers = []) {
     const factoryComponents = [];
     
     // Find machine-to-node and machine-to-machine connections
     const factoryConnections = connectionList.filter(conn => 
-        conn.fromId.startsWith('workflow-') // Connections originating from machines
+        conn.fromId.startsWith('machine-') // Connections originating from machines
     );
     
     if (factoryConnections.length === 0) return [];
     
-    console.log('Detected factory connections:', factoryConnections);
+    console.log('🏭 Detected factory connections:', factoryConnections);
+    console.log('🏭 All connections:', connectionList);
+    console.log('🏭 Available machines:', machineContainers.map(m => m.id));
     
     // Group connected machines and nodes into factories using Union-Find approach
     const factoryAdjacency = new Map();
@@ -197,7 +230,7 @@ function detectFactoryComponents(machineContainers, connectionList, nodeList) {
         
         // Check if target node belongs to a machine
         let targetEntity = conn.toId;
-        if (!conn.toId.startsWith('workflow-')) {
+        if (!conn.toId.startsWith('machine-')) {
             // This is a node, check if it belongs to a machine
             const targetMachine = machineContainers.find(machine => 
                 machine.nodes && machine.nodes.some(node => node.id === conn.toId)
@@ -219,7 +252,7 @@ function detectFactoryComponents(machineContainers, connectionList, nodeList) {
         factoryAdjacency.get(targetEntity).add(conn.fromId);
         
         // If target is a machine, add bidirectional connection
-        if (targetEntity.startsWith('workflow-') && factoryAdjacency.has(conn.fromId)) {
+        if (targetEntity.startsWith('machine-') && factoryAdjacency.has(conn.fromId)) {
             factoryAdjacency.get(conn.fromId).delete(conn.toId); // Remove the individual node
             factoryAdjacency.get(conn.fromId).add(targetEntity); // Add the machine instead
         }
@@ -252,10 +285,11 @@ function detectFactoryComponents(machineContainers, connectionList, nodeList) {
             if (factoryComponent.entities.size > 1) {
                 console.log('Creating factory with entities:', Array.from(factoryComponent.entities));
                 // Create factory container
-                const factory = createFactoryContainer(factoryComponent, machineContainers, connectionList, nodeList);
+                const factory = createFactoryContainer(factoryComponent, machineContainers, connectionList, nodeList, existingContainers);
                 if (factory) {
                     console.log('Successfully created factory container:', factory);
                     factoryComponents.push(factory);
+                    existingContainers.push(factory);
                 }
             }
         }
@@ -264,7 +298,7 @@ function detectFactoryComponents(machineContainers, connectionList, nodeList) {
     return factoryComponents;
 }
 
-function detectNetworkComponents(factoryContainers, connectionList, nodeList, machineContainers) {
+function detectNetworkComponents(factoryContainers, connectionList, nodeList, machineContainers, existingContainers = []) {
     const networkComponents = [];
     
     // Find factory-to-node and factory-to-factory connections
@@ -362,7 +396,7 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
             // 1) A standalone node, OR 
             // 2) Another factory (factory-to-factory connection)
             const factories = Array.from(networkComponent.entities).filter(id => id.startsWith('factory-'));
-            const standaloneNodes = Array.from(networkComponent.entities).filter(id => !id.startsWith('factory-') && !id.startsWith('workflow-'));
+            const standaloneNodes = Array.from(networkComponent.entities).filter(id => !id.startsWith('factory-') && !id.startsWith('machine-'));
             
             const hasMultipleFactories = factories.length >= 2;
             const hasFactoryAndStandaloneNode = factories.length >= 1 && standaloneNodes.length >= 1;
@@ -370,10 +404,11 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
             if ((hasMultipleFactories || hasFactoryAndStandaloneNode) && networkComponent.entities.size > 1) {
                 console.log('Creating network with entities:', Array.from(networkComponent.entities));
                 // Create network container
-                const network = createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList);
+                const network = createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList, existingContainers);
                 if (network) {
                     console.log('Successfully created network container:', network);
                     networkComponents.push(network);
+                    existingContainers.push(network);
                 }
             }
         }
@@ -385,12 +420,12 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
 /**
  * Creates a factory container for machine-to-node hierarchies
  */
-function createFactoryContainer(factoryComponent, machineContainers, connectionList, nodeList) {
+function createFactoryContainer(factoryComponent, machineContainers, connectionList, nodeList, existingContainers = []) {
     const { entities } = factoryComponent;
     
     // Get all machines and nodes in this factory
     const machines = machineContainers.filter(m => entities.has(m.id));
-    const nodeIds = Array.from(entities).filter(id => !id.startsWith('workflow-'));
+    const nodeIds = Array.from(entities).filter(id => !id.startsWith('machine-'));
     
     if (machines.length === 0) return null;
     
@@ -429,8 +464,9 @@ function createFactoryContainer(factoryComponent, machineContainers, connectionL
         entities.has(conn.fromId) && entities.has(conn.toId)
     );
     
+    const factoryNumber = getNextFactoryNumber(existingContainers);
     return {
-        id: `factory-${Array.from(entities).sort().join('-')}`,
+        id: `factory-${factoryNumber}`,
         machines: machines,
         nodeIds: nodeIds,
         connections: factoryConnections,
@@ -450,12 +486,12 @@ function createFactoryContainer(factoryComponent, machineContainers, connectionL
 /**
  * Creates a network container for factory-to-node hierarchies
  */
-function createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList) {
+function createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList, existingContainers = []) {
     const { entities } = networkComponent;
     
     // Get all factories and standalone nodes in this network
     const factories = factoryContainers.filter(f => entities.has(f.id));
-    const nodeIds = Array.from(entities).filter(id => !id.startsWith('factory-') && !id.startsWith('workflow-'));
+    const nodeIds = Array.from(entities).filter(id => !id.startsWith('factory-') && !id.startsWith('machine-'));
     
     if (factories.length === 0) return null;
     
@@ -496,8 +532,9 @@ function createNetworkContainer(networkComponent, factoryContainers, connectionL
         entities.has(conn.fromId) && entities.has(conn.toId)
     );
     
+    const networkNumber = getNextNetworkNumber(existingContainers);
     return {
-        id: `network-${Array.from(entities).sort().join('-')}`,
+        id: `network-${networkNumber}`,
         factories: factories,
         nodeIds: nodeIds,
         connections: networkConnections,
@@ -517,7 +554,7 @@ function createNetworkContainer(networkComponent, factoryContainers, connectionL
 /**
  * Creates a workflow container for a group of connected nodes
  */
-function createWorkflowContainer(nodeGroup, connectionList) {
+function createWorkflowContainer(nodeGroup, connectionList, existingContainers = []) {
     // Calculate bounding box with padding
     const padding = 20;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -538,8 +575,9 @@ function createWorkflowContainer(nodeGroup, connectionList) {
     // Determine if this is a multi-node workflow (needs play button)
     const isWorkflow = nodeGroup.length > 1 || internalConnections.length > 0;
     
+    const machineNumber = getNextMachineNumber(existingContainers);
     return {
-        id: `workflow-${nodeGroup.map(n => n.id).sort().join('-')}`,
+        id: `machine-${machineNumber}`,
         nodes: nodeGroup,
         connections: internalConnections,
         bounds: {
@@ -1203,7 +1241,7 @@ async function transferMachineOutputs(sourceMachineId, factory) {
     for (const connection of outgoingConnections) {
         const targetId = connection.toId;
         
-        if (targetId.startsWith('workflow-')) {
+        if (targetId.startsWith('machine-')) {
             await transferToMachineInputs(targetId, sourceMachineId, machineOutput);
         } else {
             const { nodeActions } = await import('./nodes.js');

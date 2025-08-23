@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import { NodeData } from '../lib/NodeData.js';
 
 /**
@@ -21,10 +21,21 @@ export const nodeDataStore = writable(new Map());
 /** @type {import('svelte/store').Writable<Connection[]>} */
 export const connections = writable([]);
 
+// Helper function to get next node number
+function getNextNodeNumber(nodeList) {
+    const nodeNumbers = nodeList
+        .filter(n => n.id && n.id.startsWith('node-'))
+        .map(n => parseInt(n.id.split('-')[1]))
+        .filter(n => !isNaN(n));
+    return nodeNumbers.length > 0 ? Math.max(...nodeNumbers) + 1 : 1;
+}
+
 // Helper functions for node operations
 export const nodeActions = {
     add: (type, x, y, content = '') => {
-        const id = crypto.randomUUID();
+        const currentNodes = get(nodes);
+        const nodeNumber = getNextNodeNumber(currentNodes);
+        const id = `node-${nodeNumber}`;
         const title = type === 'input' ? 'Input Node' : 
                      type === 'dynamic' ? 'AI Output' : 'Static Node';
 
