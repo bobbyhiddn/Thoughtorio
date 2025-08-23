@@ -1,10 +1,9 @@
 <script>
     import { onMount, afterUpdate } from 'svelte';
     import { canvasState } from '../stores/canvas.js';
-    import { nodeActions } from '../stores/nodes.js';
+    import { nodeActions, connections } from '../stores/nodes.js';
     import { executionState } from '../stores/workflows.js';
-    import { copyText, copyNodeConfig, copyNodeMetadata, pasteConfig } from './clipboard.js';
-    
+    import { copyText, copyConfig, copyNodeConfig, copyNodeMetadata, pasteConfig } from './clipboard.js';
     export let node;
     export let startConnection = null;
     export let completeConnection = null;
@@ -183,10 +182,10 @@
                     const nodeData = nodeActions.getNodeData(node.id);
                     console.log('Retrieved node data:', nodeData);
                     if (nodeData) {
-                        const configResult = await copyNodeConfig(nodeData, node.content);
+                        const configResult = await copyConfig(nodeData, 'node', $connections, null, null, node.content);
                         if (configResult.success) {
                             console.log('Node config copied to clipboard successfully');
-                            console.log('Config:', configResult.elegantConfig);
+                            console.log('Config:', configResult.config);
                         } else {
                             console.error('Failed to copy config:', configResult.error);
                         }
@@ -216,7 +215,7 @@
                     if (pasteResult.success) {
                         let config = null;
                         
-                        if (pasteResult.type === 'node_config' || pasteResult.type === 'raw_yaml') {
+                        if (pasteResult.type === 'node_config' || pasteResult.type === 'raw_yaml' || pasteResult.type === 'node_metadata') {
                             config = pasteResult.data.config;
                         }
                         

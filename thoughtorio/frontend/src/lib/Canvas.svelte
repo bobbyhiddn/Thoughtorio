@@ -9,7 +9,7 @@
     import SettingsPanel from './SettingsPanel.svelte';
     import ConfigPanel from './ConfigPanel.svelte';
     import CanvasContextMenu from './CanvasContextMenu.svelte';
-    import { pasteAndCreateConfig } from './clipboard.js';
+    import { pasteAndCreateConfigUniversal } from './clipboard.js';
     
     let canvasElement;
     let isDragging = false;
@@ -527,12 +527,12 @@
             console.log('📍 Current viewport:', $viewport);
             
             // Get current mouse position or center of viewport for placement
-            const centerX = ($viewport.width || 800) / 2 - ($viewport.x || 0);
-            const centerY = ($viewport.height || 600) / 2 - ($viewport.y || 0);
+            const centerX = 800 / 2 - ($viewport.x || 0);
+            const centerY = 600 / 2 - ($viewport.y || 0);
             
             console.log('📍 Paste offset calculated:', { centerX, centerY });
             
-            const result = await pasteAndCreateConfig(centerX, centerY);
+            const result = await pasteAndCreateConfigUniversal(centerX, centerY);
             
             if (result.success) {
                 console.log('✅ Successfully pasted and created:', result.createdNodes.length, 'nodes');

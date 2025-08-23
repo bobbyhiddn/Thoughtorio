@@ -126,6 +126,7 @@ export function resetContainerCounters() {
  * @property {Connection[]} connections
  * @property {{x: number, y: number, width: number, height: number}} bounds
  * @property {boolean} isWorkflow
+ * @property {boolean} [isMachine]
  * @property {boolean} [isFactory]
  * @property {'idle' | 'running' | 'completed' | 'error'} executionState
  * @property {number | null} lastExecuted
@@ -384,13 +385,8 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
     });
     
     // Process all network connections (factory-to-node and factory-to-factory)
-    networkConnections.forEach(conn => {
-        // Add source factory if it exists
-        if (networkAdjacency.has(conn.fromId)) {
-            networkAdjacency.get(conn.fromId).add(conn.toId);
-        }
-        
-        // Check what the target is
+    networkConnections.forEach(conn => {        
+        // Check what the target is FIRST before adding anything to adjacency
         let targetEntity = conn.toId;
         
         // Case 1: Target is a standalone node (not part of any machine or factory)
@@ -406,6 +402,7 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
         
         if (!isInMachine && !isInFactory) {
             // Case 1: Standalone node - add to network
+            targetEntity = conn.toId; // Keep as node ID
             if (!networkAdjacency.has(targetEntity)) {
                 networkAdjacency.set(targetEntity, new Set());
             }
@@ -413,7 +410,7 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
             networkAdjacency.get(conn.fromId).add(targetEntity);
             console.log(`Factory-to-standalone-node connection: ${conn.fromId} -> ${targetEntity}`);
         } else if (isInFactory) {
-            // Case 2: Target is a node in another factory - connect the factories
+            // Case 2: Target is a node in another factory - connect the factories (NOT the node)
             const targetFactory = factoryContainers.find(factory => 
                 (factory.machines && factory.machines.some(machine => 
                     machine.nodes && machine.nodes.some(node => node.id === conn.toId)
@@ -422,17 +419,17 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
             );
             
             if (targetFactory && targetFactory.id !== conn.fromId) {
-                // Connect the two factories
+                // Connect the two factories, NOT the individual node
                 targetEntity = targetFactory.id;
                 if (!networkAdjacency.has(targetEntity)) {
                     networkAdjacency.set(targetEntity, new Set());
                 }
                 networkAdjacency.get(targetEntity).add(conn.fromId);
                 networkAdjacency.get(conn.fromId).add(targetEntity);
-                console.log(`Factory-to-factory connection: ${conn.fromId} -> ${targetEntity}`);
+                console.log(`Factory-to-factory connection: ${conn.fromId} -> ${targetEntity} (node ${conn.toId} stays in factory)`);
             }
         } else if (isInMachine && !isInFactory) {
-            // Case 3: Target is a node in a machine (not in a factory) - connect factory to machine
+            // Case 3: Target is a node in a machine (not in a factory) - connect factory to machine (NOT the node)
             const targetMachine = machineContainers.find(machine => 
                 machine.nodes && machine.nodes.some(node => node.id === conn.toId)
             );
@@ -444,7 +441,7 @@ function detectNetworkComponents(factoryContainers, connectionList, nodeList, ma
                 }
                 networkAdjacency.get(targetEntity).add(conn.fromId);
                 networkAdjacency.get(conn.fromId).add(targetEntity);
-                console.log(`Factory-to-machine connection: ${conn.fromId} -> ${targetEntity}`);
+                console.log(`Factory-to-machine connection: ${conn.fromId} -> ${targetEntity} (node ${conn.toId} stays in machine)`);
             }
         }
     });
@@ -544,9 +541,23 @@ function createFactoryContainer(factoryComponent, machineContainers, connectionL
     }
     
     // Find connections within this factory
-    const factoryConnections = connectionList.filter(conn => 
-        entities.has(conn.fromId) && entities.has(conn.toId)
+    const allNodeIdsInFactory = new Set(
+        machines.flatMap(m => m.nodes.map(n => n.id)).concat(nodeIds)
     );
+
+    const factoryConnections = connectionList.filter(conn => {
+        // A connection belongs to the factory if:
+        // 1. It's between two machines in the factory.
+        const isMachineToMachine = entities.has(conn.fromId) && entities.has(conn.toId);
+        
+        // 2. It's from a machine in the factory to a node in the factory.
+        const isMachineToNode = entities.has(conn.fromId) && allNodeIdsInFactory.has(conn.toId);
+
+        // 3. It's from a node in the factory to a machine in the factory.
+        const isNodeToMachine = allNodeIdsInFactory.has(conn.fromId) && entities.has(conn.toId);
+
+        return isMachineToMachine || isMachineToNode || isNodeToMachine;
+    });
     
     const factoryId = getNextFactoryId(entities);
     return {
@@ -620,10 +631,31 @@ function createNetworkContainer(networkComponent, factoryContainers, connectionL
         return null;
     }
     
-    // Find connections within this network
-    const networkConnections = connectionList.filter(conn => 
-        entities.has(conn.fromId) && entities.has(conn.toId)
+    // Find connections within this network - handle hierarchical connections properly
+    const allContainedContainerIds = new Set(
+        [...factories, ...machines].map(c => c.id)
     );
+
+    const allContainedNodeIds = new Set([
+        ...factories.flatMap(f => f.machines.flatMap(m => m.nodes.map(n => n.id))),
+        ...factories.flatMap(f => f.nodeIds),
+        ...machines.flatMap(m => m.nodes.map(n => n.id)),
+        ...nodeIds
+    ]);
+
+    const networkConnections = connectionList.filter(conn => {
+        // A connection belongs to the network if:
+        // 1. It's between two containers in the network (factory-to-factory, factory-to-machine, etc.)
+        const isContainerToContainer = allContainedContainerIds.has(conn.fromId) && allContainedContainerIds.has(conn.toId);
+        
+        // 2. It's from a container in the network to a node in the network
+        const isContainerToNode = allContainedContainerIds.has(conn.fromId) && allContainedNodeIds.has(conn.toId);
+        
+        // 3. It's from a node in the network to a container in the network
+        const isNodeToContainer = allContainedNodeIds.has(conn.fromId) && allContainedContainerIds.has(conn.toId);
+
+        return isContainerToContainer || isContainerToNode || isNodeToContainer;
+    });
     
     const networkId = getNextNetworkId(networkComponent.entities);
     return {
@@ -683,6 +715,7 @@ function createWorkflowContainer(nodeGroup, connectionList, existingContainers =
             height: (maxY - minY) + (2 * padding)
         },
         isWorkflow,
+        isMachine: true,  // Add the isMachine flag for machine containers
         executionState: /** @type {'idle'} */ ('idle'), // 'idle', 'running', 'completed', 'error'
         lastExecuted: null
     };

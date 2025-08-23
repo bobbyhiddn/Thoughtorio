@@ -275,7 +275,7 @@
             attempts++;
         }
         
-        if (window.go && window.go.app && window.go.app.App) {
+        if (window.go && window.go.main && window.go.main.App) {
             handleModeSpecificModelLoad();
         } else {
             console.warn('Wails runtime not available after waiting');

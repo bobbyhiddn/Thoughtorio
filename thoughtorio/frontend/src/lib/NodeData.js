@@ -277,8 +277,8 @@ export class NodeData {
         });
     }
     
-    // Elegant, concise config format
-    toElegantConfig(visualContent = null) {
+    // Concise config format
+    toConfig(visualContent = null) {
         const config = {
             node: {
                 id: this.data.id,

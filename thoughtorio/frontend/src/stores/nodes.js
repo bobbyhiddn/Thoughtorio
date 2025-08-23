@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { NodeData } from '../lib/NodeData.js';
+import { parse as yamlParse } from 'yaml';
 
 /**
  * @typedef {object} Connection
@@ -275,12 +276,59 @@ export const nodeActions = {
             // Parse the YAML config if it's a string
             let configData;
             if (typeof config === 'string') {
+                // Try to detect concise "node:" YAML and apply minimally
+                try {
+                    const parsed = yamlParse(config);
+                    if (parsed && parsed.node) {
+                        // Patch existing NodeData instead of full overwrite
+                        nodeDataStore.update(store => {
+                            const newStore = new Map(store);
+                            let existing = newStore.get(id);
+                            if (!existing) {
+                                existing = new NodeData(parsed.node.type || 'static', id);
+                            }
+                            // Update node type if provided
+                            if (parsed.node.type) {
+                                existing.data.node_type = parsed.node.type;
+                            }
+                            // Update content using class method to trigger recompute/auto-exec
+                            if (parsed.node.content !== undefined) {
+                                existing.updateContent(parsed.node.content || '');
+                            }
+                            // Preserve existing title/metadata; allow optional title from config
+                            if (parsed.node.title) {
+                                existing.data.metadata.title = parsed.node.title;
+                            }
+                            // Ensure ID consistency
+                            existing.data.id = id;
+                            newStore.set(id, existing);
+                            return newStore;
+                        });
+
+                        // Update visual node based on patched data
+                        const current = get(nodeDataStore).get(id);
+                        nodes.update(n => n.map(node => 
+                            node.id === id ? { 
+                                ...node, 
+                                content: current?.data.content,
+                                title: current?.data.metadata.title,
+                                type: current?.data.node_type
+                            } : node
+                        ));
+
+                        return { success: true };
+                    }
+                } catch (e) {
+                    // Fall through to full YAML parsing below
+                }
+
+                // Fallback: assume full NodeData YAML
                 configData = NodeData.fromYAML(config);
             } else {
                 configData = config;
             }
 
-            // Update both stores
+            // Update both stores (full overwrite path)
             nodeDataStore.update(store => {
                 const newStore = new Map(store);
                 // Keep the same ID but apply the config
