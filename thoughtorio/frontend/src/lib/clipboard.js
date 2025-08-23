@@ -1430,23 +1430,12 @@ export async function pasteAndCreateConfigUniversal(targetX = null, targetY = nu
             console.log('🌐 PHASE 7: Detecting network container...');
             await new Promise(resolve => setTimeout(resolve, 500));
             
-            // Trigger network detection
-            const { detectNetworkContainers } = await import('../stores/workflows.js');
-            const { nodeDataStore, connectionStore } = await import('../stores/nodes.js');
-            
-            const allNodes = Array.from(get(nodeDataStore).values());
-            const allConnections = get(connectionStore);
+            // Network containers are automatically detected by the workflow system
+            // Just find the created network container
             const allContainers = get(workflowContainers);
+            const networkContainers = allContainers.filter(c => c.isNetwork);
             
-            const networkContainers = detectNetworkContainers(
-                allContainers.filter(c => c.isFactory),
-                allConnections,
-                allNodes,
-                allContainers.filter(c => c.isMachine),
-                allContainers
-            );
-            
-            console.log(`🌐 Detected ${networkContainers.length} network containers`);
+            console.log(`🌐 Found ${networkContainers.length} network containers`);
             
             if (networkContainers.length > 0) {
                 // Find the network that contains our factories
@@ -1465,9 +1454,6 @@ export async function pasteAndCreateConfigUniversal(targetX = null, targetY = nu
                 if (matchingNetwork) {
                     containerIdMap.set(universalContainer.metadata.originalId, matchingNetwork.id);
                     console.log(`🌐 Mapped network: ${universalContainer.metadata.originalId} -> ${matchingNetwork.id}`);
-                    
-                    // Update the workflow containers store with the new network
-                    workflowContainers.update(containers => [...containers, matchingNetwork]);
                 }
             }
         }
