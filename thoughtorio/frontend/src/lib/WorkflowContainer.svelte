@@ -90,13 +90,13 @@
             if (container.nodeIds) {
                 container.nodeIds.forEach(nodeId => {
                     // Get current node position
-                    let currentNode = null;
+                    let currentNode = /** @type {any} */ (null);
                     const unsubscribe = nodes.subscribe(nodeList => {
                         currentNode = nodeList.find(n => n.id === nodeId) || null;
                     });
                     unsubscribe();
                     
-                    if (currentNode) {
+                    if (currentNode && currentNode.x !== undefined && currentNode.y !== undefined) {
                         nodeActions.move(nodeId, currentNode.x + deltaX, currentNode.y + deltaY);
                     }
                 });
