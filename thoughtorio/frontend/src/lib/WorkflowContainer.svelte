@@ -16,7 +16,8 @@
     
     $: isExecuting = $executionState.activeWorkflows.has(container.id);
     $: showPlayButton = (container.isWorkflow && container.nodes && container.nodes.length > 1) || 
-                       (container.isFactory && container.machines && container.machines.length > 0);
+                       (container.isFactory && container.machines && container.machines.length > 0) ||
+                       (container.isNetwork && container.factories && container.factories.length > 0);
     
     
     // Debug execution state changes
@@ -77,7 +78,47 @@
         const deltaY = (event.clientY - mouseDownPos.y) / scale;
         
         // Move all content in the container
-        if (container.isFactory) {
+        if (container.isNetwork) {
+            // For network containers, move all factories and standalone nodes
+            container.factories.forEach(factory => {
+                // Move each factory's machines
+                factory.machines.forEach(machine => {
+                    machine.nodes.forEach(node => {
+                        nodeActions.move(node.id, node.x + deltaX, node.y + deltaY);
+                    });
+                });
+                
+                // Move factory's individual nodes
+                if (factory.nodeIds) {
+                    factory.nodeIds.forEach(nodeId => {
+                        let currentNode = /** @type {any} */ (null);
+                        const unsubscribe = nodes.subscribe(nodeList => {
+                            currentNode = nodeList.find(n => n.id === nodeId) || null;
+                        });
+                        unsubscribe();
+                        
+                        if (currentNode && currentNode.x !== undefined && currentNode.y !== undefined) {
+                            nodeActions.move(nodeId, currentNode.x + deltaX, currentNode.y + deltaY);
+                        }
+                    });
+                }
+            });
+            
+            // Move standalone nodes in the network
+            if (container.nodeIds) {
+                container.nodeIds.forEach(nodeId => {
+                    let currentNode = /** @type {any} */ (null);
+                    const unsubscribe = nodes.subscribe(nodeList => {
+                        currentNode = nodeList.find(n => n.id === nodeId) || null;
+                    });
+                    unsubscribe();
+                    
+                    if (currentNode && currentNode.x !== undefined && currentNode.y !== undefined) {
+                        nodeActions.move(nodeId, currentNode.x + deltaX, currentNode.y + deltaY);
+                    }
+                });
+            }
+        } else if (container.isFactory) {
             // For factory containers, move all machines and individual nodes
             container.machines.forEach(machine => {
                 // Move each machine's nodes
@@ -267,10 +308,11 @@
     }
 </script>
 
-{#if container.isWorkflow || container.isFactory}
+{#if container.isWorkflow || container.isFactory || container.isNetwork}
     <div 
         class="workflow-container"
         class:factory-container={container.isFactory}
+        class:network-container={container.isNetwork}
         class:executing={isExecuting}
         class:dragging={isDragging}
         style="
@@ -283,26 +325,7 @@
         on:contextmenu={handleRightClick}
     >
         <!-- Container border -->
-        {#if container.isFactory}
-            <!-- Factory border with draggable frame -->
-            <div class="factory-border">
-                <!-- Top border (draggable) -->
-                <div class="factory-border-edge top" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-                <!-- Right border (draggable) -->
-                <div class="factory-border-edge right" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-                <!-- Bottom border (draggable) -->
-                <div class="factory-border-edge bottom" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-                <!-- Left border (draggable) -->
-                <div class="factory-border-edge left" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-                <!-- Corner areas for better dragging -->
-                <div class="factory-corner top-left" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-                <div class="factory-corner top-right" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-                <div class="factory-corner bottom-left" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-                <div class="factory-corner bottom-right" on:mousedown={handleMouseDown} on:contextmenu={handleRightClick}></div>
-            </div>
-        {:else}
-            <div class="container-border"></div>
-        {/if}
+        <div class="container-border"></div>
         
         <!-- Play/Stop button -->
         {#if showPlayButton}
@@ -336,22 +359,22 @@
         
         <!-- Container label -->
         <div class="container-label">
-            {#if container.isFactory}
+            {#if container.isNetwork}
+                Node Network ({container.factories?.length || 0} factories, {container.nodeIds?.length || 0} nodes)
+            {:else if container.isFactory}
                 Node Factory ({container.machines?.length || 0} machines, {container.nodeIds?.length || 0} nodes)
             {:else}
                 Node Machine ({container.nodes?.length || 0} nodes)
             {/if}
         </div>
         
-        <!-- Machine Output port only (not for factory containers) -->
-        {#if !container.isFactory}
-            <div 
-                class="machine-port output-port" 
-                title="Machine Output"
-                on:mousedown={(e) => handlePortMouseDown(e, 'output')}
-                on:mouseup={(e) => handlePortMouseUp(e, 'output')}
-            ></div>
-        {/if}
+        <!-- Output port for both machines and factories -->
+        <div 
+            class="machine-port output-port" 
+            title={container.isFactory ? 'Factory Output' : 'Machine Output'}
+            on:mousedown={(e) => handlePortMouseDown(e, 'output')}
+            on:mouseup={(e) => handlePortMouseUp(e, 'output')}
+        ></div>
     </div>
 {/if}
 
@@ -360,7 +383,7 @@
     .workflow-container {
         position: absolute;
         pointer-events: none;
-        z-index: 0; /* Behind nodes but above canvas */
+        z-index: 0; /* Default for machines - behind nodes but above canvas */
         cursor: url('../assets/cursor-grab.svg') 16 16, grab;
     }
     
@@ -385,10 +408,20 @@
         transition: all 0.2s ease;
     }
     
-    /* Factory containers allow interaction with contents */
+    /* Factory containers have solid orange styling like machines */
     .factory-container .container-border {
-        pointer-events: none;
-        background: rgba(245, 158, 11, 0.03); /* More transparent for factories */
+        border: 2px solid #f59e0b; /* Orange solid border */
+        background: rgba(245, 158, 11, 0.08);
+        pointer-events: all; /* Allow dragging factory */
+    }
+    
+    /* Factory containers allow interaction with contained elements */
+    .factory-container {
+        pointer-events: none; /* Allow clicks to pass through to contained machines */
+    }
+    
+    .factory-container .container-border {
+        pointer-events: all; /* But allow dragging the factory border */
     }
     
     .workflow-container.executing .container-border {
@@ -411,6 +444,7 @@
         align-items: center;
         gap: 8px;
         pointer-events: all;
+        z-index: 1000; /* Above all containers */
     }
     
     .play-button {
@@ -532,6 +566,16 @@
         animation: pulse-port 2s ease-in-out infinite;
     }
     
+    /* Factory ports are orange */
+    .factory-container .machine-port {
+        border-color: #f59e0b;
+    }
+    
+    .factory-container .machine-port:hover {
+        background: #f59e0b;
+        border-color: #d97706;
+    }
+    
     @keyframes pulse-port {
         0%, 100% {
             box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.7);
@@ -541,12 +585,11 @@
         }
     }
     
-    /* Factory container specific styles */
+    /* Factory container specific styles - orange container */
     .factory-container .container-border {
-        border: 3px solid #f59e0b;
-        border-radius: 16px;
+        border: 2px solid #f59e0b; /* Orange solid border */
+        border-radius: 12px;
         background: rgba(245, 158, 11, 0.08);
-        border-style: solid; /* Solid border for factories vs dashed for machines */
     }
     
     .factory-container:hover .container-border {
@@ -567,95 +610,7 @@
         border-color: rgba(245, 158, 11, 0.3);
     }
     
-    /* Factory border system */
-    .factory-border {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        pointer-events: none;
-    }
-    
-    .factory-border-edge {
-        position: absolute;
-        pointer-events: all;
-        background: rgba(245, 158, 11, 0.1);
-        border: 2px solid #f59e0b;
-        cursor: url('../assets/cursor-grab.svg') 16 16, grab;
-    }
-    
-    .factory-border-edge.top {
-        top: -2px;
-        left: 20px;
-        right: 20px;
-        height: 8px;
-        border-radius: 4px 4px 0 0;
-    }
-    
-    .factory-border-edge.bottom {
-        bottom: -2px;
-        left: 20px;
-        right: 20px;
-        height: 8px;
-        border-radius: 0 0 4px 4px;
-    }
-    
-    .factory-border-edge.left {
-        left: -2px;
-        top: 20px;
-        bottom: 20px;
-        width: 8px;
-        border-radius: 4px 0 0 4px;
-    }
-    
-    .factory-border-edge.right {
-        right: -2px;
-        top: 20px;
-        bottom: 20px;
-        width: 8px;
-        border-radius: 0 4px 4px 0;
-    }
-    
-    .factory-corner {
-        position: absolute;
-        width: 20px;
-        height: 20px;
-        pointer-events: all;
-        background: rgba(245, 158, 11, 0.2);
-        border: 2px solid #f59e0b;
-        cursor: url('../assets/cursor-grab.svg') 16 16, grab;
-    }
-    
-    .factory-corner.top-left {
-        top: -2px;
-        left: -2px;
-        border-radius: 8px 0 0 0;
-    }
-    
-    .factory-corner.top-right {
-        top: -2px;
-        right: -2px;
-        border-radius: 0 8px 0 0;
-    }
-    
-    .factory-corner.bottom-left {
-        bottom: -2px;
-        left: -2px;
-        border-radius: 0 0 0 8px;
-    }
-    
-    .factory-corner.bottom-right {
-        bottom: -2px;
-        right: -2px;
-        border-radius: 0 0 8px 0;
-    }
-    
-    .factory-border-edge:hover,
-    .factory-corner:hover {
-        background: rgba(245, 158, 11, 0.3);
-        border-color: #d97706;
-    }
+    /* Removed complex factory border system - now using simple container like machines */
     
     /* Ensure play buttons inside factories are clickable */
     .factory-container .play-button-container {
@@ -663,9 +618,73 @@
         pointer-events: all;
     }
     
-    /* Ensure factory containers don't block contained workflow containers */
+    /* Factory containers are above networks but below when dragging */
     .factory-container {
-        z-index: -1; /* Below contained machines */
+        z-index: -1; /* Below machines, above networks */
+    }
+    
+    .factory-container.dragging {
+        z-index: 10; /* Above everything when dragging factory */
+    }
+    
+    /* Network container specific styles - teal/green container */
+    .network-container .container-border {
+        border: 2px solid #14b8a6; /* Teal solid border */
+        border-radius: 12px;
+        background: rgba(20, 184, 166, 0.08);
+        pointer-events: all; /* Allow dragging network */
+    }
+    
+    /* Network containers allow interaction with contained elements */
+    .network-container {
+        pointer-events: none; /* Allow clicks to pass through to contained elements */
+    }
+    
+    .network-container .container-border {
+        pointer-events: all; /* But allow dragging the network border */
+    }
+    
+    .network-container:hover .container-border {
+        border-color: #14b8a6;
+        background: rgba(20, 184, 166, 0.12);
+        box-shadow: 0 0 15px rgba(20, 184, 166, 0.2);
+    }
+    
+    .network-container.executing .container-border {
+        border-color: #10b981;
+        background: rgba(16, 185, 129, 0.1);
+        box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+    }
+    
+    .network-container .container-label {
+        background: rgba(45, 212, 191, 0.9);
+        color: #0f766e;
+        border-color: rgba(20, 184, 166, 0.3);
+    }
+    
+    /* Network ports are teal */
+    .network-container .machine-port {
+        border-color: #14b8a6;
+    }
+    
+    .network-container .machine-port:hover {
+        background: #14b8a6;
+        border-color: #0d9488;
+    }
+    
+    /* Network containers are behind contained elements */
+    .network-container {
+        z-index: -2; /* Below factories and machines */
+    }
+    
+    .network-container.dragging {
+        z-index: 10; /* Above everything when dragging network */
+    }
+    
+    /* Ensure network play buttons are accessible */
+    .network-container .play-button-container {
+        z-index: 1000; /* Above all containers */
+        pointer-events: all;
     }
     
     .factory-container.dragging {

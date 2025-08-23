@@ -86,7 +86,10 @@ function detectConnectedComponents(nodeList, connectionList) {
     // Then, detect factory hierarchies (machine-to-node connections)
     const factoryComponents = detectFactoryComponents(actualMachines, connectionList, nodeList);
     
-    return [...basicComponents, ...factoryComponents];
+    // Finally, detect network hierarchies (factory-to-node connections)
+    const networkComponents = detectNetworkComponents(factoryComponents, connectionList, nodeList, actualMachines);
+    
+    return [...basicComponents, ...factoryComponents, ...networkComponents];
 }
 
 function detectBasicNodeComponents(nodeList, connectionList) {
@@ -235,6 +238,124 @@ function detectFactoryComponents(machineContainers, connectionList, nodeList) {
     return factoryComponents;
 }
 
+function detectNetworkComponents(factoryContainers, connectionList, nodeList, machineContainers) {
+    const networkComponents = [];
+    
+    // Find factory-to-node and factory-to-factory connections
+    const networkConnections = connectionList.filter(conn => 
+        conn.fromId.startsWith('factory-') // Connections originating from factories
+    );
+    
+    if (networkConnections.length === 0) return [];
+    
+    console.log('Detected potential network connections:', networkConnections);
+    
+    // Group connected factories and nodes into networks using Union-Find approach
+    const networkAdjacency = new Map();
+    
+    // Add all factory containers as potential network components
+    factoryContainers.forEach(factory => {
+        networkAdjacency.set(factory.id, new Set());
+    });
+    
+    // Process all network connections (factory-to-node and factory-to-factory)
+    networkConnections.forEach(conn => {
+        // Add source factory if it exists
+        if (networkAdjacency.has(conn.fromId)) {
+            networkAdjacency.get(conn.fromId).add(conn.toId);
+        }
+        
+        // Check what the target is
+        let targetEntity = conn.toId;
+        
+        // Case 1: Target is a standalone node (not part of any machine or factory)
+        const isInMachine = machineContainers.some(machine => 
+            machine.nodes && machine.nodes.some(node => node.id === conn.toId)
+        );
+        const isInFactory = factoryContainers.some(factory => 
+            (factory.machines && factory.machines.some(machine => 
+                machine.nodes && machine.nodes.some(node => node.id === conn.toId)
+            )) || 
+            (factory.nodeIds && factory.nodeIds.includes(conn.toId))
+        );
+        
+        if (!isInMachine && !isInFactory) {
+            // Standalone node - add to network
+            if (!networkAdjacency.has(targetEntity)) {
+                networkAdjacency.set(targetEntity, new Set());
+            }
+            networkAdjacency.get(targetEntity).add(conn.fromId);
+            networkAdjacency.get(conn.fromId).add(targetEntity);
+        } else if (isInFactory) {
+            // Case 2: Target is a node in another factory - connect the factories
+            const targetFactory = factoryContainers.find(factory => 
+                (factory.machines && factory.machines.some(machine => 
+                    machine.nodes && machine.nodes.some(node => node.id === conn.toId)
+                )) || 
+                (factory.nodeIds && factory.nodeIds.includes(conn.toId))
+            );
+            
+            if (targetFactory && targetFactory.id !== conn.fromId) {
+                // Connect the two factories
+                targetEntity = targetFactory.id;
+                if (!networkAdjacency.has(targetEntity)) {
+                    networkAdjacency.set(targetEntity, new Set());
+                }
+                networkAdjacency.get(targetEntity).add(conn.fromId);
+                networkAdjacency.get(conn.fromId).add(targetEntity);
+                console.log(`Factory-to-factory connection: ${conn.fromId} -> ${targetEntity}`);
+            }
+        }
+    });
+    
+    const visited = new Set();
+    
+    // DFS to find network components
+    function dfsNetwork(entityId, networkComponent) {
+        if (visited.has(entityId)) return;
+        visited.add(entityId);
+        
+        // Add to network component
+        networkComponent.entities.add(entityId);
+        
+        // Visit connected entities
+        if (networkAdjacency.has(entityId)) {
+            for (const neighbor of networkAdjacency.get(entityId)) {
+                dfsNetwork(neighbor, networkComponent);
+            }
+        }
+    }
+    
+    // Find network components
+    for (const [entityId] of networkAdjacency) {
+        if (!visited.has(entityId)) {
+            const networkComponent = { entities: new Set() };
+            dfsNetwork(entityId, networkComponent);
+            
+            // Networks require at least one factory and either:
+            // 1) A standalone node, OR 
+            // 2) Another factory (factory-to-factory connection)
+            const factories = Array.from(networkComponent.entities).filter(id => id.startsWith('factory-'));
+            const standaloneNodes = Array.from(networkComponent.entities).filter(id => !id.startsWith('factory-') && !id.startsWith('workflow-'));
+            
+            const hasMultipleFactories = factories.length >= 2;
+            const hasFactoryAndStandaloneNode = factories.length >= 1 && standaloneNodes.length >= 1;
+            
+            if ((hasMultipleFactories || hasFactoryAndStandaloneNode) && networkComponent.entities.size > 1) {
+                console.log('Creating network with entities:', Array.from(networkComponent.entities));
+                // Create network container
+                const network = createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList);
+                if (network) {
+                    console.log('Successfully created network container:', network);
+                    networkComponents.push(network);
+                }
+            }
+        }
+    }
+    
+    return networkComponents;
+}
+
 /**
  * Creates a factory container for machine-to-node hierarchies
  */
@@ -294,6 +415,73 @@ function createFactoryContainer(factoryComponent, machineContainers, connectionL
             height: (maxY - minY) + (2 * padding) + playButtonSpace
         },
         isFactory: true,
+        isWorkflow: false,
+        executionState: /** @type {'idle'} */ ('idle'),
+        lastExecuted: null
+    };
+}
+
+/**
+ * Creates a network container for factory-to-node hierarchies
+ */
+function createNetworkContainer(networkComponent, factoryContainers, connectionList, nodeList) {
+    const { entities } = networkComponent;
+    
+    // Get all factories and standalone nodes in this network
+    const factories = factoryContainers.filter(f => entities.has(f.id));
+    const nodeIds = Array.from(entities).filter(id => !id.startsWith('factory-') && !id.startsWith('workflow-'));
+    
+    if (factories.length === 0) return null;
+    
+    console.log(`Creating network with ${factories.length} factories and ${nodeIds.length} standalone nodes`);
+    
+    // Calculate bounding box that encompasses all factories and nodes
+    const padding = 40; // Larger padding for networks
+    const playButtonSpace = 50; // Space above container for play button
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    
+    // Include factory bounds
+    factories.forEach(factory => {
+        minX = Math.min(minX, factory.bounds.x);
+        minY = Math.min(minY, factory.bounds.y);
+        maxX = Math.max(maxX, factory.bounds.x + factory.bounds.width);
+        maxY = Math.max(maxY, factory.bounds.y + factory.bounds.height);
+    });
+    
+    // Include individual node positions (standalone nodes connected to factories)
+    nodeIds.forEach(nodeId => {
+        const node = nodeList.find(n => n.id === nodeId);
+        if (node) {
+            minX = Math.min(minX, node.x);
+            minY = Math.min(minY, node.y);
+            maxX = Math.max(maxX, node.x + node.width);
+            maxY = Math.max(maxY, node.y + node.height);
+        }
+    });
+    
+    // Validate bounds
+    if (minX === Infinity || minY === Infinity || maxX === -Infinity || maxY === -Infinity) {
+        console.warn('Invalid network bounds calculated, skipping network creation');
+        return null;
+    }
+    
+    // Find connections within this network
+    const networkConnections = connectionList.filter(conn => 
+        entities.has(conn.fromId) && entities.has(conn.toId)
+    );
+    
+    return {
+        id: `network-${Array.from(entities).sort().join('-')}`,
+        factories: factories,
+        nodeIds: nodeIds,
+        connections: networkConnections,
+        bounds: {
+            x: minX - padding,
+            y: minY - padding - playButtonSpace,
+            width: (maxX - minX) + (2 * padding),
+            height: (maxY - minY) + (2 * padding) + playButtonSpace
+        },
+        isNetwork: true,
         isWorkflow: false,
         executionState: /** @type {'idle'} */ ('idle'),
         lastExecuted: null
