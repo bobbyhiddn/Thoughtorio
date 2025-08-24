@@ -270,6 +270,64 @@ export const nodeActions = {
         });
     },
 
+    // Reset node data to clear accumulated context/history
+    resetNodeData: (id) => {
+        nodeDataStore.update(store => {
+            const newStore = new Map(store);
+            const nodeData = newStore.get(id);
+            if (nodeData) {
+                // Reset the node data to initial state based on type
+                const nodeType = nodeData.data.node_type;
+                const content = nodeData.data.content;
+                
+                switch (nodeType) {
+                    case 'input':
+                    case 'static':
+                        nodeData.data.output = {
+                            type: 'structured_context',
+                            value: {
+                                facts: content ? [content] : [],
+                                history: [],
+                                task: ""
+                            },
+                            sources: [id], // Keep self as source
+                            context_chain: [{
+                                node_id: id,
+                                type: nodeType,
+                                contribution: {
+                                    type: 'fact',
+                                    content: content
+                                },
+                                processing: 'static',
+                                timestamp: new Date().toISOString()
+                            }]
+                        };
+                        break;
+                    case 'dynamic':
+                        nodeData.data.output = {
+                            type: 'structured_context',
+                            value: { facts: [], history: [], task: "" },
+                            sources: [],
+                            context_chain: []
+                        };
+                        break;
+                }
+                
+                // Clear inputs and reset execution state
+                nodeData.data.inputs = [];
+                nodeData.data.execution = {
+                    status: 'idle',
+                    started_at: null,
+                    completed_at: null,
+                    error: null
+                };
+                
+                newStore.set(id, nodeData);
+            }
+            return newStore;
+        });
+    },
+
     // Apply config from clipboard to a node
     applyNodeConfig: (id, config) => {
         try {

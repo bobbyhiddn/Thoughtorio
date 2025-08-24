@@ -4,7 +4,9 @@ function createExecutionState() {
     const { subscribe, set, update } = writable({
         activeNodes: new Set(),
         completedNodes: new Set(),
-        errorNodes: new Set()
+        errorNodes: new Set(),
+        activeWorkflows: new Set(),
+        completedWorkflows: new Set()
     });
 
     return {
@@ -25,7 +27,23 @@ function createExecutionState() {
             state.errorNodes.add(nodeId);
             return state;
         }),
-        reset: () => set({ activeNodes: new Set(), completedNodes: new Set(), errorNodes: new Set() })
+        startWorkflow: (workflowId) => update(state => {
+            state.activeWorkflows.add(workflowId);
+            state.completedWorkflows.delete(workflowId);
+            return state;
+        }),
+        completeWorkflow: (workflowId) => update(state => {
+            state.activeWorkflows.delete(workflowId);
+            state.completedWorkflows.add(workflowId);
+            return state;
+        }),
+        reset: () => set({ 
+            activeNodes: new Set(), 
+            completedNodes: new Set(), 
+            errorNodes: new Set(),
+            activeWorkflows: new Set(),
+            completedWorkflows: new Set()
+        })
     };
 }
 

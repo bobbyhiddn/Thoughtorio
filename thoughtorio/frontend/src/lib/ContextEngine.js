@@ -39,7 +39,7 @@ export class ContextEngine {
         if (nodeData.content || nodeData.node_type === 'dynamic') {
             const contribution = this._createContribution(nodeData);
             
-            if (contribution && contribution.content && !seenNodeIds.has(nodeData.id)) {
+            if (contribution && !seenNodeIds.has(nodeData.id)) {
                 newChain.push({
                     node_id: nodeData.id,
                     type: nodeData.node_type,

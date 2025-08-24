@@ -997,6 +997,11 @@ export const workflowActions = {
         const allNodeIds = collectAllNodeIds(container);
         const allContainerIds = collectAllContainerIds(container);
 
+        // Clear accumulated node data/context before execution
+        allNodeIds.forEach(id => {
+            nodeActions.resetNodeData(id);
+        });
+
         executionState.update(s => {
             allNodeIds.forEach(id => {
                 s.activeNodes.delete(id);
