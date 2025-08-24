@@ -20,19 +20,18 @@ Example workflow: `[Me] → [Work] → [Effort] → [Dynamic Output]`
 │   Web Frontend  │ ←─────────────→ │   Go Backend    │
 │   (Canvas UI)   │                │   (Core Logic)  │
 └─────────────────┘                └─────────────────┘
-                                           │
-                                           ▼
-                                   ┌─────────────────┐
-                                   │ Canvas Database │
-                                   │    (SQLite)     │
-                                   └─────────────────┘
-                                           │
-                                           ▼
-                                   ┌─────────────────┐
-                                   │   RAG System    │
-                                   │ (Embeddings +   │
-                                   │      LLM)       │
-                                   └─────────────────┘
+                                          │
+                                          ▼
+                                  ┌─────────────────┐
+                                  │   File Storage  │
+                                  │ (.thoughtorio)  │
+                                  └─────────────────┘
+                                          │
+                                          ▼
+                                  ┌─────────────────┐
+                                  │   CAG System    │
+                                  │     (Cache)     │
+                                  └─────────────────┘
 ```
 
 ## Component Architecture
@@ -48,91 +47,25 @@ Example workflow: `[Me] → [Work] → [Effort] → [Dynamic Output]`
 
 ### 2. Backend (Go HTTP Server)
 - **Built on existing legos**:
-  - Database module for persistence
-  - Embeddings module for RAG
+  - Storage module for file persistence
   - LLM module for AI generation
 - **New components**:
   - Canvas manager
   - Node execution engine
   - Workflow orchestrator
 - **API Endpoints**:
-  - `/canvas/{id}` - CRUD operations for canvases
-  - `/nodes` - Node management
-  - `/connections` - Connection management
+  - `/canvas/save` - Save canvas to a file
+  - `/canvas/load` - Load canvas from a file
   - `/execute` - Workflow execution
-  - `/embeddings/search` - RAG queries
 
-### 3. Database Layer (Per-Canvas SQLite)
-Each canvas gets its own SQLite database file for isolation and portability.
+### 3. Storage Layer (File-based)
+Each canvas is saved as a single `.thoughtorio` file, which is a JSON representation of all nodes, connections, and their properties. This makes canvases portable and easy to share.
 
-#### Schema Design
-```sql
--- Core canvas metadata
-CREATE TABLE canvas_meta (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    created_at TEXT,
-    updated_at TEXT
-);
-
--- Nodes on the canvas
-CREATE TABLE nodes (
-    id TEXT PRIMARY KEY,
-    type TEXT NOT NULL, -- 'input', 'dynamic', 'static', 'connector'
-    content TEXT,
-    x REAL NOT NULL,    -- Canvas position
-    y REAL NOT NULL,
-    width REAL DEFAULT 200,
-    height REAL DEFAULT 100,
-    style JSON,         -- Node styling (color, etc.)
-    metadata JSON,      -- Type-specific configuration
-    created_at TEXT,
-    updated_at TEXT
-);
-
--- Connections between nodes
-CREATE TABLE connections (
-    id TEXT PRIMARY KEY,
-    from_node_id TEXT NOT NULL,
-    to_node_id TEXT NOT NULL,
-    from_port TEXT DEFAULT 'output',  -- Output port name
-    to_port TEXT DEFAULT 'input',     -- Input port name
-    style JSON,                       -- Connection styling
-    created_at TEXT,
-    FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
-    FOREIGN KEY (to_node_id) REFERENCES nodes(id) ON DELETE CASCADE
-);
-
--- Execution history for dynamic nodes
-CREATE TABLE executions (
-    id TEXT PRIMARY KEY,
-    workflow_hash TEXT,  -- Hash of the workflow state
-    node_id TEXT,
-    result TEXT,
-    context_used TEXT,   -- RAG context that influenced the result
-    execution_time REAL,
-    created_at TEXT,
-    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
-);
-
--- Node embeddings for RAG
-CREATE TABLE node_embeddings (
-    node_id TEXT PRIMARY KEY,
-    embedding BLOB,
-    vector_version TEXT,
-    created_at TEXT,
-    updated_at TEXT,
-    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
-);
-```
-
-### 4. RAG System
-- **Purpose**: Provide context-aware AI generation by finding relevant nodes/content
+### 4. CAG (Cache Augmented Generation) System
+- **Purpose**: Provide context-aware AI generation by using previously generated results as context.
 - **Implementation**: 
-  - Reuse existing embeddings module
-  - Index all node content for semantic search
-  - Provide context to LLM for dynamic node generation
+  - During workflow execution, the outputs of completed nodes are cached.
+  - This cache is provided to the LLM as context for generating subsequent dynamic node outputs.
 
 ## Node Types
 
@@ -150,7 +83,7 @@ CREATE TABLE node_embeddings (
   - Shows loading state during generation
   - Maintains execution history
   - Can be regenerated with different results
-- **Generation**: Uses connected inputs + RAG context
+- **Generation**: Uses connected inputs + CAG context
 
 ### 3. Static Nodes
 - **Purpose**: Fixed reference content that doesn't change
@@ -170,7 +103,7 @@ CREATE TABLE node_embeddings (
 ### Execution Flow
 1. **Dependency Resolution**: Build execution graph from connections
 2. **Topological Sort**: Determine execution order
-3. **Context Gathering**: Use RAG to find relevant canvas content
+3. **Context Gathering**: Use CAG to find relevant canvas content
 4. **Node Processing**: Execute each node type appropriately
 5. **Result Propagation**: Pass outputs to connected nodes
 
@@ -186,7 +119,7 @@ CREATE TABLE node_embeddings (
 ```
 User Input → Node Creation → Connection Drawing → Play Button
      ↓
-Workflow Analysis → Dependency Graph → RAG Context Gathering
+Workflow Analysis → Dependency Graph → CAG Context Gathering
      ↓
 LLM Generation → Result Display → Database Persistence
 ```
@@ -201,8 +134,8 @@ LLM Generation → Result Display → Database Persistence
 ### Performance
 - **Frontend**: Canvas virtualization for large workflows
 - **Backend**: Concurrent node execution where possible
-- **Database**: Indexed queries, connection pooling
-- **RAG**: Embedding caching, similarity thresholds
+- **Database**: Not applicable (file-based storage)
+- **CAG**: Caching of intermediate node results
 
 ## Extensibility
 
@@ -221,7 +154,97 @@ LLM Generation → Result Display → Database Persistence
 This architecture supports incremental development:
 
 1. **Phase 1**: Basic canvas with input/dynamic nodes
-2. **Phase 2**: RAG integration and context awareness
+2. **Phase 2**: CAG integration and context awareness
 3. **Phase 3**: Advanced node types and connectors
 4. **Phase 4**: Collaboration and sharing features
 5. **Phase 5**: Plugin ecosystem and integrations
+
+## Mermaid Diagrams
+
+### Node Architecture
+
+```mermaid
+classDiagram
+  class Node {
+    id: string
+    type: input|dynamic|static|connector
+    content: text
+    metadata: JSON
+  }
+  Node <|-- InputNode
+  Node <|-- DynamicNode
+  Node <|-- StaticNode
+  Node <|-- ConnectorNode
+
+  class Connection {
+    id: string
+    from_node_id: string
+    to_node_id: string
+    from_port: string
+    to_port: string
+  }
+```
+
+### Workflow / Container Architecture
+
+```mermaid
+erDiagram
+  NETWORK ||--o{ FACTORY : contains
+  FACTORY ||--o{ MACHINE : contains
+  MACHINE ||--o{ NODE : executes
+```
+
+Clarifications:
+- **Machine**: Base execution unit; contains and runs `nodes`. No factories or networks inside.
+- **Factory**: Groups `machines`; orchestrates their execution. No standalone nodes directly.
+- **Network**: Groups `factories`; orchestrates inter-factory flow. No machines or nodes directly.
+
+### File Architecture
+
+```mermaid
+flowchart LR
+  ROOT["repo root /"] --> DOCS["docs/"]
+  ROOT --> THO["thoughtorio/"]
+
+  subgraph THO["thoughtorio/"]
+    direction TB
+    FE["frontend/"] --> FESRC["frontend/src/"]
+    FE --> FEWJS["frontend/wailsjs/"]
+    INT["internal/"] --> INTAPP["internal/app/"]
+    INT --> INTPROV["internal/providers/"]
+    INT --> INTMOD["internal/models/"]
+    BUILD["build/"]
+  end
+```
+
+### Context Architecture (CAG)
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant FE as Frontend (Canvas)
+  participant BE as Go Backend
+  participant CACHE as Execution Cache
+  participant LLM as LLM Provider
+
+  U->>FE: Press Play
+  FE->>BE: /execute (workflow)
+  BE->>CACHE: Check/load prior results
+  CACHE-->>BE: Cached context
+  BE->>LLM: Prompt + Context
+  LLM-->>BE: Generated output
+  BE->>CACHE: Store new results
+  BE-->>FE: Outputs per node
+```
+
+### Execution Flow
+
+```mermaid
+flowchart TD
+  A[Build dependency graph] --> B[Topological sort]
+  B --> C[Gather CAG context]
+  C --> D[Execute node by type]
+  D --> E{More nodes?}
+  E -- Yes --> D
+  E -- No --> F[Persist results + outputs]
+  F --> G[Render to canvas]

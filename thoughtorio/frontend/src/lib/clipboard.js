@@ -597,7 +597,7 @@ function createMachineConfigObject(machineContainer, nodeDataMap, nodesList, all
 
 // Hierarchical copy functions
 async function copyNodeHierarchy(nodeData, connections = [], visualContent = null, allContainerConnections = []) {
-    // Get config
+    // Get clean config without execution state
     let config = nodeData.toConfig(visualContent);
     
     // Add outputs from connections
@@ -605,7 +605,6 @@ async function copyNodeHierarchy(nodeData, connections = [], visualContent = nul
     const outgoingConnections = connections.filter(conn => conn.fromId === nodeId);
     
     if (outgoingConnections.length > 0) {
-        // Parse the YAML to add outputs
         const configData = yamlParse(config);
         configData.node.outputs = outgoingConnections.map(conn => conn.toId);
         config = yamlStringify(configData, { 
@@ -1109,23 +1108,28 @@ export async function pasteAndCreateConfigUniversal(targetX = null, targetY = nu
 
         const createNodesRecursive = async (container) => {
             if (container.type === 'node') {
-                // Calculate relative position from original structure center
                 const relativeX = container.coordinates.x - structureCenter.x;
                 const relativeY = container.coordinates.y - structureCenter.y;
-                
-                // Position relative to target center
                 const finalX = target.x + relativeX;
                 const finalY = target.y + relativeY;
                 
+                // Create the basic node
                 const node = nodeActions.add(
                     container.config.nodeType,
                     finalX,
                     finalY,
                     container.config.content || ''
                 );
+                
+                // **NEW: Initialize proper state after creation**
+                await new Promise(resolve => setTimeout(resolve, 10)); // Brief wait for node creation
+                
+                const { initializeNodeState } = await import('../stores/nodes.js');
+                initializeNodeState(node.id, container.config.nodeType, container.config.content);
+                
                 createdNodes.push(node);
                 actualIdMap.set(container.metadata.originalId, node.id);
-                console.log(`✅ Created node: ${container.metadata.originalId} -> ${node.id}`);
+                console.log(`✅ Created and initialized node: ${container.metadata.originalId} -> ${node.id}`);
             }
             
             for (const child of container.children) {

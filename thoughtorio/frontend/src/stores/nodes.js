@@ -355,6 +355,65 @@ export const nodeActions = {
     }
 };
 
+// Add this to nodes.js
+function initializeNodeState(nodeId, nodeType, content) {
+    const nodeData = get(nodeDataStore).get(nodeId);
+    if (!nodeData) return;
+    
+    // Initialize proper state based on node type
+    switch (nodeType) {
+        case 'input':
+        case 'static':
+            nodeData.data.output = {
+                type: 'structured_context',
+                value: {
+                    facts: content ? [content] : [],
+                    history: [],
+                    task: ""
+                },
+                sources: [nodeId],
+                context_chain: [{
+                    node_id: nodeId,
+                    type: nodeType,
+                    contribution: {
+                        type: 'fact',
+                        content: content || ""
+                    },
+                    processing: 'unknown',
+                    timestamp: new Date().toISOString()
+                }]
+            };
+            nodeData.data.execution = {
+                state: 'completed',
+                started_at: new Date().toISOString(),
+                completed_at: new Date().toISOString(),
+                error: null
+            };
+            break;
+            
+        case 'dynamic':
+            // Dynamic nodes start with empty state - they get populated during execution
+            nodeData.data.output = {
+                type: 'structured_context',
+                value: { facts: [], history: [], task: "" },
+                sources: [],
+                context_chain: []
+            };
+            nodeData.data.execution = {
+                state: 'idle',
+                started_at: null,
+                completed_at: null,
+                error: null
+            };
+            break;
+    }
+    
+    console.log(`✅ Initialized ${nodeType} node ${nodeId} with proper state`);
+}
+
+// Export this so clipboard.js can use it
+export { initializeNodeState };
+
 // Helper functions for connection operations
 export const connectionActions = {
     add: (fromId, toId, fromPort, toPort) => {
