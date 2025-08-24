@@ -122,26 +122,32 @@ export function resetContainerCounters() {
 /**
  * @typedef {object} WorkflowContainer
  * @property {string} id
- * @property {Node[]} nodes
+ * @property {Node[]} [nodes]
+ * @property {string[]} [nodeIds]
  * @property {Connection[]} connections
  * @property {{x: number, y: number, width: number, height: number}} bounds
  * @property {boolean} isWorkflow
  * @property {boolean} [isMachine]
  * @property {boolean} [isFactory]
+ * @property {boolean} [isNetwork]
  * @property {'idle' | 'running' | 'completed' | 'error'} executionState
  * @property {number | null} lastExecuted
  * @property {WorkflowContainer[]} [machines]
+ * @property {FactoryContainer[]} [factories]
  */
 
 /**
  * @typedef {object} FactoryContainer
  * @property {string} id
  * @property {WorkflowContainer[]} machines
+ * @property {FactoryContainer[]} [factories]
  * @property {string[]} nodeIds
  * @property {Connection[]} connections
  * @property {{x: number, y: number, width: number, height: number}} bounds
  * @property {boolean} isFactory
  * @property {boolean} isWorkflow
+ * @property {boolean} [isNetwork]
+ * @property {Node[]} [nodes]
  * @property {'idle' | 'running' | 'completed' | 'error'} executionState
  * @property {number | null} lastExecuted
  */
@@ -150,11 +156,14 @@ export function resetContainerCounters() {
  * @typedef {object} NetworkContainer
  * @property {string} id
  * @property {FactoryContainer[]} factories
+ * @property {WorkflowContainer[]} [machines]
  * @property {string[]} nodeIds
  * @property {Connection[]} connections
  * @property {{x: number, y: number, width: number, height: number}} bounds
  * @property {boolean} isNetwork
  * @property {boolean} isWorkflow
+ * @property {boolean} [isFactory]
+ * @property {Node[]} [nodes]
  * @property {'idle' | 'running' | 'completed' | 'error'} executionState
  * @property {number | null} lastExecuted
  */
@@ -913,11 +922,11 @@ async function executeContainer(container) {
                 try {
                     console.log(`   - Calling AI for: ${entity.id}`);
                     
-                    if (!window.go || !window.go.app || !window.go.app.App) {
+                    if (!window.go || !(/** @type {any} */ (window.go)).app || !(/** @type {any} */ (window.go)).app.App) {
                         throw new Error('Wails runtime not available');
                     }
                     
-                    const response = await window.go.app.App.GetAICompletion(
+                    const response = await (/** @type {any} */ (window.go)).app.App.GetAICompletion(
                         currentSettings.activeMode, currentSettings.story_processing_model_id, inputText, apiKey
                     );
                     
@@ -1092,7 +1101,7 @@ async function executeWorkflow(container) {
                     console.log(`   - Calling AI for: ${node.id}`);
                     
                     // Check if Wails runtime is available
-                    if (!window.go || !window.go.app || !window.go.app.App) {
+                    if (!window.go || !(/** @type {any} */ (window.go)).app || !(/** @type {any} */ (window.go)).app.App) {
                         console.error('Wails runtime check failed. Available paths:', {
                             'window.go': !!window.go,
                             'window.go.main': !!window.go?.main,
@@ -1101,7 +1110,7 @@ async function executeWorkflow(container) {
                         throw new Error('Wails runtime not available. Make sure the app is properly initialized.');
                     }
                     
-                    const response = await window.go.app.App.GetAICompletion(
+                    const response = await (/** @type {any} */ (window.go)).app.App.GetAICompletion(
                         currentSettings.activeMode,
                         currentSettings.story_processing_model_id,
                         inputText,
@@ -1393,7 +1402,7 @@ export function getNetworkOutput(network) {
     const terminalOutputs = terminalEntities.map(entity => {
         if (entity.type === 'factory') {
             const factory = get(workflowContainers).find(c => c.id === entity.id);
-            return factory ? getFactoryOutput(factory) : null;
+            return (factory && factory.isFactory) ? getFactoryOutput(/** @type {FactoryContainer} */ (factory)) : null;
         }
         if (entity.type === 'node') {
              const nodeData = nodeActions.getNodeData(entity.id);
