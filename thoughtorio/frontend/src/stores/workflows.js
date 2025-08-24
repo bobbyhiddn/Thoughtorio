@@ -1096,7 +1096,7 @@ async function executeWorkflow(container) {
                         console.error('Wails runtime check failed. Available paths:', {
                             'window.go': !!window.go,
                             'window.go.main': !!window.go?.main,
-                            'window.go.app': !!window.go?.app
+                            'window.go.app': !!(/** @type {any} */ (window.go)?.app)
                         });
                         throw new Error('Wails runtime not available. Make sure the app is properly initialized.');
                     }
