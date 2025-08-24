@@ -733,6 +733,7 @@ function createWorkflowContainer(nodeGroup, connectionList, existingContainers =
 // Workflow execution state
 export const executionState = writable({
     activeWorkflows: new Set(),
+    completedWorkflows: new Set(), // Track completed containers
     activeNodes: new Set(),
     completedNodes: new Set(),
     results: new Map()
@@ -844,11 +845,12 @@ async function executeContainer(container) {
             if (parentEntity.isNetwork || parentEntity.isFactory || parentEntity.isWorkflow) {
                 const currentState = get(executionState);
                 const isParentRunning = currentState.activeWorkflows.has(parentEntity.id);
-                if (!isParentRunning) {
+                const isParentCompleted = currentState.completedWorkflows.has(parentEntity.id);
+                if (!isParentRunning && !isParentCompleted) {
                     console.log(`[Dependency Execution] Executing context source '${parentEntity.id}' before processing '${entity.id}'`);
                     await executeContainer(parentEntity);
                 } else {
-                    console.log(`[Dependency Execution] Context source '${parentEntity.id}' is already running. Using current state.`);
+                    console.log(`[Dependency Execution] Context source '${parentEntity.id}' is already running or completed. Using current state.`);
                 }
             }
 
@@ -888,11 +890,12 @@ async function executeContainer(container) {
             if (parentEntity.isNetwork || parentEntity.isFactory || parentEntity.isWorkflow) {
                 const currentState = get(executionState);
                 const isParentRunning = currentState.activeWorkflows.has(parentEntity.id);
-                if (!isParentRunning) {
+                const isParentCompleted = currentState.completedWorkflows.has(parentEntity.id);
+                if (!isParentRunning && !isParentCompleted) {
                     console.log(`[Dependency Execution] Executing context source '${parentEntity.id}' before processing '${entityId}'`);
                     await executeContainer(parentEntity);
                 } else {
-                    console.log(`[Dependency Execution] Context source '${parentEntity.id}' is already running. Using current state.`);
+                    console.log(`[Dependency Execution] Context source '${parentEntity.id}' is already running or completed. Using current state.`);
                 }
             }
 
@@ -955,9 +958,28 @@ async function executeContainer(container) {
     executionState.update(state => {
         const newActive = new Set(state.activeWorkflows);
         newActive.delete(container.id);
-        return { ...state, activeWorkflows: newActive };
+        const newCompleted = new Set(state.completedWorkflows);
+        newCompleted.add(container.id);
+        return { ...state, activeWorkflows: newActive, completedWorkflows: newCompleted };
     });
     console.log(`✅ Container execution completed: ${container.id}`);
+}
+
+/**
+ * Recursively collects all container IDs from a container and its children.
+ * @param {object} container - A machine, factory, or network container.
+ * @param {Set<string>} [containerIdSet] - The set to add container IDs to.
+ * @returns {Set<string>} A set of all container IDs.
+ */
+function collectAllContainerIds(container, containerIdSet = new Set()) {
+    containerIdSet.add(container.id);
+    if (container.machines) {
+        container.machines.forEach(m => collectAllContainerIds(m, containerIdSet));
+    }
+    if (container.factories) {
+        container.factories.forEach(f => collectAllContainerIds(f, containerIdSet));
+    }
+    return containerIdSet;
 }
 
 // Helper functions for workflow execution
@@ -971,20 +993,17 @@ export const workflowActions = {
             return;
         }
         
-        // Reset node states within this container before execution
-        const allNodeIds = new Set();
-        function collectNodeIds(c) {
-            if (c.nodes) c.nodes.forEach(n => allNodeIds.add(n.id));
-            if (c.machines) c.machines.forEach(m => collectNodeIds(m));
-            if (c.factories) c.factories.forEach(f => collectNodeIds(f));
-            if (c.nodeIds) c.nodeIds.forEach(id => allNodeIds.add(id));
-        }
-        collectNodeIds(container);
+        // Reset node and container states within this container before execution
+        const allNodeIds = collectAllNodeIds(container);
+        const allContainerIds = collectAllContainerIds(container);
 
         executionState.update(s => {
             allNodeIds.forEach(id => {
                 s.activeNodes.delete(id);
                 s.completedNodes.delete(id);
+            });
+            allContainerIds.forEach(id => {
+                s.completedWorkflows.delete(id); // Reset completion status
             });
             return s;
         });
